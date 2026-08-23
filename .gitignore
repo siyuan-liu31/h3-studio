@@ -76,5 +76,9 @@ __pycache__/
 
 # Explicitly approved public README examples; keep all other media ignored.
 !/docs/assets/readme/
-!/docs/assets/readme/*.png
-!/docs/assets/readme/*.jpg
+!/docs/assets/readme/canvas-workflow.png
+!/docs/assets/readme/generated-video-preview.gif
+!/docs/assets/readme/image-models.png
+!/docs/assets/readme/long-video-continuation.png
+!/docs/assets/readme/long-video-editor.png
+!/docs/assets/readme/video-modes.png
