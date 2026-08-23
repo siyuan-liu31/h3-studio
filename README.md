@@ -12,10 +12,17 @@
   <a href="#三步启动">三步启动</a> ·
   <a href="docs/installation.md">完整安装指南</a> ·
   <a href="docs/h3-prompt-guide.md">H3 提示词指南</a> ·
-  <a href="docs/long-video.md">长视频说明</a>
+  <a href="docs/long-video.md">长视频说明</a> ·
+  <a href="docs/releasing.md">发布规范</a>
 </p>
 
 H3 Studio 把素材、提示词、模型参数与生成结果组织在一张可持久化画布中。浏览器负责节点编排、参考素材绑定、预览和项目管理；Python 服务负责安全上传、工作流编译、ComfyUI 队列、结果下载与恢复。画布会自动保存，可以同时维护多个独立工作流。
+
+> 以下界面截图使用经用户授权公开的演示素材，仅用于说明功能；仓库不包含对应的原始素材、模型权重或生成视频文件。
+
+<p align="center">
+  <img src="docs/assets/readme/canvas-workflow.png" width="100%" alt="H3 Studio 节点画布示例：参考图、H3 视频节点和输出节点组成生成工作流">
+</p>
 
 ```mermaid
 flowchart LR
@@ -28,6 +35,14 @@ flowchart LR
   R -. 显式保存 .-> A[资产库]
 ```
 
+## 生成效果示例
+
+下面的封面截取自 H3 Studio 生成的 9:16、15.08 秒带音频演示视频。这里只公开封面示例，完整生成文件不进入代码仓库。
+
+<p align="center">
+  <img src="docs/assets/readme/generated-video-poster.jpg" width="360" alt="H3 Studio 生成视频示例封面：舞台上的动画歌手">
+</p>
+
 ## 核心能力
 
 ### 节点画布
@@ -39,6 +54,10 @@ flowchart LR
 - 画布、资产和任务状态都可刷新恢复，结果支持预览和下载。
 
 ### 七种视频创作模式
+
+<p align="center">
+  <img src="docs/assets/readme/video-modes.png" width="760" alt="H3 Video 节点支持 Auto、T2V、I2V、FL2V、R2V、V2V 和 RV2V 模式">
+</p>
 
 | 模式 | 用途 | 输入约束 |
 | --- | --- | --- |
@@ -53,6 +72,10 @@ flowchart LR
 H3 视频支持 16:9、9:16 和 24 FPS，时长使用真实的 `17k+5` 帧网格：124–362 帧，约 5.17–15.08 秒。采样可选择 Turbo LoRA 或官方基础 Profile；界面展示最终解析的模型、采样器、步数、LoRA 与调度参数，不把工作流预览冒充实际任务证据。
 
 ### 多模型生图与图像编辑
+
+<p align="center">
+  <img src="docs/assets/readme/image-models.png" width="760" alt="Image Generation 节点的图片模型选择器示例">
+</p>
 
 | 模型 / 工作流 | 支持方式 | 适合场景 |
 | --- | --- | --- |
@@ -69,7 +92,15 @@ H3 视频支持 16:9、9:16 和 24 FPS，时长使用真实的 `17k+5` 帧网格
 
 长视频工作区把现有视频和待生成片段放进统一时间线，可预览、切分、调整入出点、创建空白段，并按选中片段或依赖顺序执行。
 
+<p align="center">
+  <img src="docs/assets/readme/long-video-editor.png" width="100%" alt="H3 Studio 长视频编辑器示例：监视器、分镜时间线和已有素材片段">
+</p>
+
 每个待生成片段都可以选择独立生成、使用上一段尾帧续接，或把上一段视频作为 Ref2VA 参考。续接配置、画面比例、有效时长、采样档、LoRA 强度与 Seed 都会随项目保存。
+
+<p align="center">
+  <img src="docs/assets/readme/long-video-continuation.png" width="100%" alt="长视频片段选择上一段视频进行续接生成的界面示例">
+</p>
 
 ```mermaid
 flowchart LR
@@ -212,7 +243,7 @@ app/       React 节点画布与工作区 UI
 server/    Python 标准库 API、存储、任务与 ComfyUI 工作流编译
 scripts/   安装、启动、诊断、长视频与运维工具
 skills/    项目附带的单一 H3 Prompt Compiler skill
-docs/      安装、架构、模型工作流与 LLM 代码地图
+docs/      安装、架构、模型工作流、发布规范与 LLM 代码地图
 tests/     前端构建、渲染和源码合同测试
 ```
 

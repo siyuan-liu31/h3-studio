@@ -73,3 +73,8 @@ __pycache__/
 *.zip
 *.log
 *.pid
+
+# Explicitly approved public README examples; keep all other media ignored.
+!/docs/assets/readme/
+!/docs/assets/readme/*.png
+!/docs/assets/readme/*.jpg

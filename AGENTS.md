@@ -32,6 +32,14 @@
 - 只记录功能、修复、兼容性、数据迁移、性能与运维变化；纯重构可省略。
 - Changelog、Git 提交、实际 release 和健康检查结果必须一致，未部署内容保留在 `Unreleased`。
 
+## 版本与 GitHub 发布
+
+- 版本号采用 SemVer，以 `package.json` 为唯一版本源；修改版本时同步更新 `package-lock.json`。
+- GitHub 默认分支固定为 `main`，不另建或维护 `master` 镜像分支。
+- 正式版本必须同时具备：`main` 上的版本提交、`CHANGELOG.md` 对应版本段、注释 Tag `vX.Y.Z` 和同名 GitHub Release，四者指向同一发布内容。
+- 完整发布检查清单见 `docs/releasing.md`。不得只改版本号、只打 Tag 或只创建 Release。
+- GitHub 发布必须获得用户在当前任务中的明确授权。未明确要求“发布到 GitHub”时，只能在本地开发、测试和准备发布内容；禁止执行 `git push`、推送 Tag、创建或修改 GitHub Release，也不得自行创建仓库或改变仓库可见性。
+
 ## 部署
 
 - 开发机使用不可变 release 目录和 `current` 软链接；不要直接修改正在运行的 release。
