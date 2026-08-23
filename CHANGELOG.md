@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-08-23
+
+### Documentation
+
+- 将 README 的 5 秒生成视频动图压缩到 GitHub 首页可稳定加载的体积，同时保持清晰画面与完整动画预览。
+
 ## [0.1.1] - 2026-08-23
 
 ### Documentation
