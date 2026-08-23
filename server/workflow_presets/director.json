@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "id": "minimax-h3-director",
+  "display_name": "MiniMax H3 Director trusted workflows",
+  "compiler": "h3_ref",
+  "conditioner_node": "MiniMaxH3ReferenceToVideo",
+  "trusted_compiler": "server.workflows.compile_video_workflow",
+  "model_binding_roles": [
+    "ref_model",
+    "ref_lora",
+    "text_encoder",
+    "video_vae",
+    "audio_vae"
+  ],
+  "audio_output": {
+    "supported": "generated",
+    "unsupported": ["source", "mute"]
+  },
+  "actual_workflow_export": "/api/jobs/{job_id}/workflow",
+  "presets": {
+    "r2v": {
+      "display_name": "Reference to Video",
+      "source_required": false,
+      "reference_contract": "1..6 connected references with at least one image or video; source_asset_id forbidden",
+      "video_layout": "Connected videos retain stable user order"
+    },
+    "v2v": {
+      "display_name": "Video to Video",
+      "source_required": true,
+      "reference_contract": "Exactly one connected video and it must equal source_asset_id",
+      "video_layout": "The source is ref_videos.ref_video_0 and resolves to <Video 1>"
+    },
+    "rv2v": {
+      "display_name": "Reference Video to Video",
+      "source_required": true,
+      "reference_contract": "Exactly one connected source video plus optional image/audio references; a second video is forbidden",
+      "video_layout": "The source is stably moved to ref_videos.ref_video_0 and resolves to <Video 1>"
+    }
+  }
+}

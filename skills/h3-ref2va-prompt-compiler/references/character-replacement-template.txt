@@ -1,0 +1,29 @@
+subject_definitions:
+<Subject 1> is the original main character appearing in <Video 1> and is the source entity to be replaced.
+<Subject 2> is the target character whose identity and visual appearance come from <Picture 1>.
+<Video 1> is the source video for the target video edit and provides the original performance, action timing, camera movement, framing, environment, lighting, spatial relationships, and scene composition.
+
+summary:
+[video editing + character replacement]
+The target video is an edited version of <Video 1>.
+Completely replace <Subject 1> with <Subject 2>, whose identity and visual appearance are defined by <Picture 1>.
+Preserve the requested performance and scene structure from <Video 1>. Do not preserve, blend, or reintroduce the visual identity or appearance of <Subject 1>.
+
+retention_analysis:
+<Video 1>: fully_preserved for body movement, poses, action timing, camera trajectory, framing, background, lighting, spatial relationships, and interaction with the environment.
+<Subject 1>: identity_not_preserved. Completely remove the original character's face, hairstyle, body appearance, clothing, and visual identity.
+<Picture 1>: fully_referenced as the identity and complete visual-appearance source for <Subject 2>.
+<Subject 2>: identity_fully_preserved. Keep the identity and visual appearance defined by <Picture 1> consistent from every visible angle and in every frame.
+
+detailed_description:
+For the target video, at 0.00 seconds, <Picture 1> is fully referenced as the identity and complete visual appearance of <Subject 2>.
+
+[Shot 1] The target video begins with the same shot composition as <Video 1>, but <Subject 2> completely replaces <Subject 1>. <Subject 2> occupies the same spatial position and follows the same body movement, poses, physical actions, reactions, and action timing shown in <Video 1>. Preserve the camera movement, framing, environment, lighting, spatial relationships, scene composition, and interactions from <Video 1>. Only the designated character's identity and appearance are replaced.
+
+Throughout the target video, <Subject 2> remains one consistent character whose identity and appearance come from <Picture 1>. Do not retain or blend characteristics from <Subject 1>. Avoid identity mixing, face morphing, duplicate characters, temporal flicker, unstable anatomy, duplicated limbs, and sudden appearance changes.
+
+overall_soundscape:
+Generate natural synchronized ambience and physical sounds consistent with the visible actions. Do not copy or reference the source video's audio unless it is explicitly wired or requested.
+
+non_diegetic_music:
+N/A

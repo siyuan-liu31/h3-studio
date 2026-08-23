@@ -1,0 +1,160 @@
+{
+  "schema_version": "1.0",
+  "reviewed_at": "2026-08-22",
+  "upstream": {
+    "repository": "https://github.com/AIMixer/ComfyUI_MiniMaxH3_Director",
+    "commit": "a267324a9f88141ff4e4b0e8c1a6ed90b4e45db7",
+    "license": "Apache-2.0",
+    "workflow_files": {
+      "r2v": {
+        "path": "example_workflows/minimax_h3_director_r2v.json",
+        "sha256": "060403fa0d99cf1ff763575c78c6d03444a5104e28a26be8156db209dec61eae"
+      },
+      "v2v": {
+        "path": "example_workflows/minimax_h3_director_v2v.json",
+        "sha256": "41e2f44ad5a53bbe34da444b9b7d4cd4838d57b543a270cc27b0cb00eac64fb3"
+      },
+      "rv2v": {
+        "path": "example_workflows/minimax_h3_director_rv2v.json",
+        "sha256": "772957fe9ef71d8d0361228f518ca593bbb5cc4f613c2b01216a91a00516b771"
+      }
+    },
+    "reviewed_source_sha256": {
+      "README_EN.md": "d127d79d89c41e8ed0404a31f04f28b17e6d2e192fe99a809e2a7e2799b640c7",
+      "nodes/conditioning.py": "6be0b764d8db243c94102238076840e670cbb706e5099160267d20b003816036",
+      "director/executor_core.py": "faa8c69ea54ddcd27b368ea107ed631a307ff0dddfc62e22db63c47c10352862",
+      "director/plan.py": "ac0de837117399834d5d435df4c48b7caae4e85eaf00f8af6e4830458d41482e",
+      "director/audio_export.py": "70a951cc99cc1b7ceca67ce66305d3932e24cf101f898992594f1f3cbcceb8c1"
+    }
+  },
+  "models": {
+    "unet": "minimax_h3_ref2va_pruned_int8_convrot.safetensors",
+    "text_encoder": "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+    "video_vae": "minimax_h3_video_vae_fp16.safetensors",
+    "audio_vae": "minimax_h3_audio_vae_fp32.safetensors",
+    "text_encoder_type": "minimax",
+    "separate_license_review_required": true
+  },
+  "upstream_example_defaults": {
+    "fps": 24,
+    "width": 864,
+    "height": 480,
+    "frames": 124,
+    "steps": 25,
+    "cfg": 1.0,
+    "sampler": "res_multistep",
+    "scheduler": "simple",
+    "sigma_shift_video": 12.0,
+    "sigma_shift_audio": 3.0,
+    "normative_for_studio_sampling": false
+  },
+  "studio_limits": {
+    "generated_fps": 24,
+    "generated_frame_grid": "17k+5",
+    "max_generated_frames": 362,
+    "max_total_references": 6,
+    "max_video_references": 3,
+    "max_audio_references": 3,
+    "reference_media_seconds": [2, 15],
+    "max_video_reference_seconds_total": 15,
+    "max_audio_reference_seconds_total": 15,
+    "note": "These product limits are intentionally tighter than the upstream Director UI. The implicit v2v/rv2v source consumes one reference and one video slot."
+  },
+  "request_contract": {
+    "director_mode_field": "director_mode",
+    "director_mode_values": ["auto", "t2v", "i2v", "fl2v", "r2v", "v2v", "rv2v"],
+    "source_field": "source_asset_id",
+    "source_id_format": "^[0-9a-f]{32}$",
+    "source_kind": "video",
+    "source_storage": "AssetStore receipt id only; never a browser or filesystem path",
+    "source_requires_connected_reference": true,
+    "source_semantic_role": "source_asset_id marks exactly one already-connected video reference as the source; the same receipt must not be duplicated as a second reference",
+    "stored_prompt_mutated": false,
+    "compiled_prompt_must_expose_source_tag": true,
+    "resolved_mode_must_be_in_job_evidence": true,
+    "compiled_workflow_must_be_in_job_evidence": true
+  },
+  "modes": {
+    "r2v": {
+      "compiler": "h3_ref",
+      "source": "forbidden",
+      "ordinary_reference_kinds": ["image", "video", "audio"],
+      "ordinary_references_min": 1,
+      "audio_only": false,
+      "source_video_input": null,
+      "prompt_tags": {
+        "image": "<Picture N>",
+        "video": "<Video N>",
+        "audio": "<Audio N>"
+      }
+    },
+    "v2v": {
+      "compiler": "h3_ref",
+      "source": "required",
+      "ordinary_reference_kinds": [],
+      "ordinary_references_min": 0,
+      "source_video_input": "ref_videos.ref_video_0",
+      "source_audio_conditioning_input": null,
+      "source_prompt_tag": "<Video 1>"
+    },
+    "rv2v": {
+      "compiler": "h3_ref",
+      "source": "required",
+      "ordinary_reference_kinds": ["image", "audio"],
+      "ordinary_references_min": 0,
+      "documented_equivalence": "The pinned upstream accepts zero extra refs; rv2v then intentionally has the same conditioning graph as v2v while retaining the explicitly requested task label.",
+      "source_video_input": "ref_videos.ref_video_0",
+      "source_audio_conditioning_input": null,
+      "source_prompt_tag": "<Video 1>",
+      "prompt_tags": {
+        "image": "<Picture N>",
+        "audio": "<Audio N>"
+      }
+    }
+  },
+  "compiled_graph_contract": {
+    "forbidden_node_types": ["MiniMaxH3Director"],
+    "required_reference_node": "MiniMaxH3ReferenceToVideo",
+    "source_chain": ["LoadVideo", "GetVideoComponents", "MiniMaxH3ReferenceToVideo.ref_videos.ref_video_0"],
+    "required_model_loaders": ["UNETLoader", "CLIPLoader", "VAELoader"],
+    "required_output_stages": ["VAEDecode", "VAEDecodeAudio", "CreateVideo", "SaveVideo"],
+    "source_must_be_first_video": true,
+    "source_must_not_be_wired_to_ref_video_audio": true,
+    "mode_must_change_graph_or_be_documented_equivalent": true,
+    "workflow_export_kind": "exact immutable compiled prompt graph from job evidence",
+    "static_upstream_template_is_not_execution_evidence": true
+  },
+  "audio_contract": {
+    "upstream_modes": ["generate", "source", "mute"],
+    "generate": "Decode the model AV latent through audio VAE and mux with generated frames.",
+    "source": "For v2v/rv2v, frame-align extraction from the source timeline and mux it after generation; if absent, upstream falls back to silence.",
+    "mute": "Skip/strip output audio.",
+    "source_audio_is_not_reference_audio": true,
+    "studio_cycle14_baseline": "generate-only",
+    "ui_gate": "Do not expose source or mute until an audio_mode request field, receipt-based source extraction, mux/strip evidence and tests exist."
+  },
+  "capability_boundary": {
+    "official_nodes_plus_studio_orchestration": [
+      "single-segment r2v conditioning",
+      "single-segment v2v source conditioning",
+      "single-segment rv2v source plus image/audio conditioning",
+      "model-generated stereo audio decode",
+      "receipt-based source trimming before LoadVideo",
+      "server-side multi-segment selection and final hard-cut merge"
+    ],
+    "upstream_custom_or_separate_implementation": [
+      "MiniMaxH3Director timeline custom node and embedded upload UI",
+      "motion-context latent/audio pinning and prefix trimming",
+      "source-audio passthrough and mute output modes",
+      "Director Refine second sampling",
+      "H3 3D latent upscale",
+      "NVIDIA RTX VSR",
+      "upstream prompt-enhancer and HTTP routes"
+    ],
+    "optional_latent_upscaler": {
+      "filename": "minimax_h3_latent_upscaler_3d_bf16.safetensors",
+      "default_enabled": false,
+      "separate_model_license_and_digest_required": true
+    }
+  }
+}

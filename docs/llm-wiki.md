@@ -1,0 +1,378 @@
+# H3 Studio LLM Wiki
+
+> 最后更新：2026-08-23（Asia/Shanghai）。面向后续开发 Agent 的代码地图；具体发布版本以 Git 和开发机 `current` 软链接为准。实现事实优先级：源码与测试 > capability/API 回执 > 本文 > 历史 evidence 文档。
+
+## 1. 先看这里
+
+H3 Studio 是一个 React/Vinext 前端加 Python 标准库 API 的单机创作工作台。浏览器保存节点画布和多个画布标签；服务端保存资产、任务、派生媒体与长视频项目，并把受约束请求编译为 ComfyUI 工作流。
+
+```text
+Browser :3013
+  scripts/start.mjs + scripts/gateway.mjs
+    ├─ 页面 -> Vinext :3014
+    └─ /api/* -> Python API :6020
+                       └─ ComfyUI :6006
+```
+
+快速定位：
+
+| 想修改的能力 | 首要文件 | 主要回归测试 |
+| --- | --- | --- |
+| 画布交互、节点 UI、生成轮询、结果抽屉 | `app/studio.tsx`, `app/globals.css` | `tests/canvas-interactions-contract.test.mjs`, `tests/studio-performance-interactions.test.mjs`, `tests/result-*.test.mjs` |
+| 画布持久化、迁移、节点合同 | `app/studio-document.ts`, `app/studio-workspace.ts` | `tests/studio-document.test.mjs`, `tests/cycle20-infinite-*.test.mjs` |
+| 连线、引用编号、执行依赖 | `app/studio-graph.ts` | `tests/studio-graph.test.mjs` |
+| H3 T2V/I2V/FL2V/R2V/V2V/RV2V | `app/studio-video-mode.ts`, `server/workflows.py` | `tests/studio-video-mode.test.mjs`, `server/tests/test_workflows.py` |
+| Prompt 与 `@素材` 标签 | `app/prompt-mentions.tsx`, `app/studio-prompt.ts`, `server/prompting.py` | `tests/studio-prompt.test.mjs`, `server/tests/test_prompting.py` |
+| Profile、模型可用性、参数边界 | `app/studio-capabilities.ts`, `server/profiles.py`, `server/comfy.py` | `tests/studio-capabilities.test.mjs`, `server/tests/test_profiles.py`, `server/tests/test_comfy.py` |
+| ComfyUI 工作流图 | `server/workflows.py` | `server/tests/test_workflows.py`, `tests/source-contracts.test.mjs` |
+| 资产库、缩略图、剪辑派生 | `app/studio-library.ts`, `server/storage.py`, `server/media.py` | `tests/studio-library.test.mjs`, `server/tests/test_media_library.py` |
+| 普通任务历史、预览、下载、删除 | `app/studio-history.ts`, `app/result-preview.ts`, `server/app.py` | `tests/studio-history.test.mjs`, `tests/result-preview.test.mjs`, `server/tests/test_app.py` |
+| 长视频模型与 UI | `app/video-project.ts`, `app/video-timeline.tsx`, `app/video-director-*.tsx` | `tests/video-timeline*.test.mjs`, `tests/video-director-model.test.mjs` |
+| 长视频执行、续接、合并 | `server/video_projects.py` | `server/tests/test_video_projects.py` |
+| 启动、网关、远端运维 | `scripts/h3studio.py`, `scripts/start.mjs`, `scripts/gateway.mjs` | `scripts/ops/tests/test_h3studio.py`, `tests/gateway.test.mjs` |
+
+## 2. 目录与入口
+
+```text
+app/
+  page.tsx                     页面入口，挂载 Studio
+  studio.tsx                   主画布与大部分用户交互（当前最大前端文件）
+  studio-document.ts           CanvasDocument V7、迁移、Profile 解析
+  studio-graph.ts              类型化连线、依赖计划、Prompt 标签编号
+  studio-workspace.ts          多画布标签和 localStorage 原子提交
+  studio-video-mode.ts         Director 模式合同与标签映射
+  video-project.ts             长视频纯数据模型、校验和运行计划
+  video-timeline.tsx           长视频抽屉编排
+  video-director-workspace.tsx 监视器、时间线与分镜编辑组件
+  api/[...path]/route.ts        开发/RSC 环境的 API 代理兼容入口
+
+server/
+  __main__.py                  Python API 进程入口
+  app.py                       HTTP 路由、Runtime 组装、普通任务生命周期
+  workflows.py                 请求解析、Prompt/工作流编译、工作流证据
+  profiles.py                  内置/外部 Profile 注册表与声明校验
+  comfy.py                     ComfyUI HTTP、能力检测、队列、取消、内存治理
+  storage.py                   JSON 元数据与资产持久化
+  media.py                     ffmpeg 派生、缩略图、派生资产生命周期
+  video_projects.py            长视频项目执行器、续接、停止、合并、恢复
+  prompting.py                 H3 Prompt 标签替换及 FL/Ref 模板编译
+  security.py                  ID、文件名、路径与媒体签名安全边界
+
+scripts/
+  h3studio.py                  doctor/install/start 的唯一推荐管理入口
+  start.mjs                    生产前端子进程与网关生命周期
+  gateway.mjs                  同源网关；服务端注入 API Key，不暴露给浏览器
+
+skills/
+  h3-ref2va-prompt-compiler/   项目附带的单一本地 H3 提示词编译 skill
+
+tests/                         Node 合同/渲染/回归测试
+server/tests/                  Python API、工作流、存储与长视频测试
+CHANGELOG.md                   用户可见版本变化；未部署内容放在 Unreleased
+```
+
+## 3. 前端状态模型
+
+### 3.1 当前存在两层表示
+
+`app/studio.tsx` 为兼容现有 UI，仍使用轻量 `StudioNode`、`Edge`、`GeneratorRuntime`；持久化和图算法使用 `CanvasDocumentV7`。关键转换函数集中在 `studio.tsx`：
+
+- `runtimesFromDocument`
+- `legacyNodesFromDocument`
+- `legacyEdgesFromDocument`
+- `canvasDocumentFromState`
+
+修改节点、连线、角色或结果字段时，必须检查双向转换和刷新恢复，不能只改 React 状态。长期方向是让 V7 文档成为唯一运行时来源，但在完成迁移前不要删除兼容层。
+
+### 3.2 CanvasDocument V7
+
+定义在 `app/studio-document.ts`：
+
+- 节点：`asset`、`video-generator`、`image-generator`、`output`
+- `MediaBinding` 保存媒体类型、槽位、来源、输出 handle 和工作流 `role`
+- `CanvasEdge` 保存拓扑和顺序；Prompt mention 绑定稳定的 `bindingId`
+- `configRevision` / `lastSuccessfulRevision` 判断结果是否过期
+- 画布约束：24 FPS、124–362 帧、最多 6 个绑定；类型容量为 Picture 9 / Video 3 / Audio 3，但项目安全预算仍是合计 6
+
+多个画布由 `app/studio-workspace.ts` 包装为 `CanvasWorkspaceV1`，保存在：
+
+- `h3-studio-canvas-workspace-v1`
+- 恢复备份 `h3-studio-canvas-workspace-v1-backup`
+- 旧单画布键由 `studio-document.ts` 迁移
+
+### 3.3 连线和标签
+
+`app/studio-graph.ts` 是类型化连线的事实来源：
+
+- `connectMedia` / `disconnectMedia` 修改 binding 和 edge
+- `orderedGeneratorInputs` 决定稳定顺序
+- `compilePromptDocument` 把 binding 编译为 `<Picture N>` / `<Video N>` / `<Audio N>`
+- `buildGeneratorExecutionPlan` 计算上游生成器的运行或复用
+- `invalidateDownstreamGenerators` 在上游新结果产生后使下游失效
+
+注意：`first_frame`、`last_frame` 是 binding/工作流角色；`<Picture 1>`、`<Picture 2>` 是 Prompt 标签。FL2V 同时有首尾帧时，通常 Picture 1 对应首帧、Picture 2 对应尾帧，但两类字段不能互换。
+
+当前画布端口使用固定节点尺寸计算曲线，`studio.tsx` 与 `.port { top: 50% }` 共同决定输入点位置。生成节点很高时，端口会远离标题；修改端口位置必须同时修改 SVG `endpoint()` 计算，否则视觉线和点击端口会错位。
+
+## 4. 视频模式与 Prompt
+
+### 4.1 Director 模式
+
+`app/studio-video-mode.ts` 和 `server/workflows.py` 必须保持同一合同：
+
+| Director | 底层 | 输入合同 |
+| --- | --- | --- |
+| `t2v` | `h3_fl` / text | 纯文本 |
+| `i2v` | `h3_fl` / fl2va | 恰好一张 `first_frame` |
+| `fl2v` | `h3_fl` / fl2va | 1–2 张图，角色只能是 `first_frame` / `last_frame`，两张时不能重复 |
+| `r2v` | `h3_ref` / ref2va | 图片/视频/音频参考；不能只有音频 |
+| `v2v` | `h3_ref` / ref2va | 明确选择一条已连源视频，不允许额外参考 |
+| `rv2v` | `h3_ref` / ref2va | 一条明确源视频，加图片或音频参考，不允许第二条视频 |
+
+前端 `buildVideoDirectorContract` 提供即时错误；后端 `_resolve_director_contract` 是安全边界。两处规则变更必须成对修改并成对测试。
+
+### 4.2 Prompt 提交链
+
+```text
+PromptMentionComposer
+  -> 前端 @{assetId} / bindingId
+  -> POST /api/prompts/compile（预览）
+  -> POST /api/generate（实际请求）
+  -> server.workflows.parse_generation_request
+  -> server.prompting.compile_prompt / preserve_tags_only
+  -> ComfyUI text encoder 输入
+```
+
+当前视频 Prompt 默认是“只读提交”语义：只把稳定素材引用替换成最终 H3 标签，不翻译、不扩写、不重排用户正文。FL2V 编译器可以根据端点角色增加首尾时间对齐说明；这不改变用户素材的角色。
+
+改 Prompt 时至少验证：
+
+- `@` 选择和重复素材去重
+- 前端最终预览与实际任务回执一致
+- 标签按媒体类型独立编号
+- 视频配对音轨先占用 Audio 标签
+- 刷新后 bindingId 和 Prompt mention 仍能恢复
+
+## 5. Profile 与工作流编译
+
+### 5.1 Profile 是能力入口
+
+`server/profiles.py` 定义 `WorkflowProfile`、内置 Profile 和外部清单校验。内置能力包括：
+
+- H3 FL2VA / Ref2VA：Turbo LoRA 与 Base
+- Z-Image Turbo：T2I、latent img2img、社区 LoRA 变体
+- Qwen-Image 2512 T2I、Qwen-Image Edit 2511
+- FLUX.2 Klein 4B/9B
+- Anything V5 回退
+
+外部 Profile 位于 `$H3_STUDIO_DATA_ROOT/profiles/*.json`，只能选择代码已经审核的 compiler。`server/comfy.py::capabilities` 结合 `/object_info`、模型选择项和 Profile 声明计算 `available`；前端只消费 capability，不自行推测文件是否存在。
+
+### 5.2 编译顺序
+
+普通生成请求：
+
+```text
+Handler._generate
+  -> parse_generation_request
+  -> registry.choose / profile identity validation
+  -> comfy.ensure_capability
+  -> compile_workflow
+  -> workflow_evidence + workflow_sha256 持久化
+  -> comfy.submit
+  -> /api/status 轮询 history/queue
+```
+
+`server/workflows.py::compile_workflow` 按 compiler 分发到 H3、checkpoint、Z-Image、Qwen 或 FLUX.2 构造器。不要让外部清单直接提供任意 ComfyUI graph；新增 compiler 必须写受控构造器和测试。
+
+### 5.3 H3 资源与内存
+
+`server/comfy.py` 从实际工作流抽取 H3 资源键：UNet、文本编码器、视频/音频 VAE、LoRA。相同键复用 ComfyUI loader 缓存；资源切换只在全局队列空闲时释放旧集合。另有空闲监控：
+
+- `H3_STUDIO_COMFY_IDLE_FREE_SECONDS`：默认 180，设 0 禁用
+- `H3_STUDIO_COMFY_IDLE_POLL_SECONDS`：默认 15
+
+释放调用 ComfyUI `/free`。不要在任务执行中卸载，也不要通过改变精度、分辨率、VAE 或采样参数换取内存。
+
+## 6. 资产、结果与存储
+
+默认数据根目录由 `server/config.py` 控制为当前工作区下的 `data/`；正式部署应通过环境变量指向独立持久盘。主要持久数据：
+
+```text
+$H3_STUDIO_DATA_ROOT/
+  metadata/assets/          资产 JSON
+  metadata/jobs/            普通生成任务 JSON
+  metadata/asset-folders/   文件夹 JSON
+  metadata/derivations/     剪辑派生回执
+  metadata/video-projects/  长视频项目（由 manager 使用）
+  derivations/              裁剪、抽帧、分离音频等文件
+  thumbnails/               缩略图缓存
+  tmp/                      有界临时文件
+  profiles/                 外部 Profile 清单
+```
+
+资产上传由 `server/storage.py::AssetStore` 流式接收、识别、探测并规范化。视频参考会生成 24 FPS 兼容副本；原始授权/来源元数据与用户文件不能随代码部署覆盖。
+
+剪辑与抽帧由 `POST /api/media/derive` 产生独立的派生结果回执，不自动进入资产库。`GET /api/derivations` 恢复结果抽屉；删除画布节点不删除回执，只有用户在结果中显式删除才会清理派生文件。画布节点右键或结果卡片的“保存到资产”调用 `POST /api/derivations/:id/assets`，并在回执中记录 `asset_id`。
+
+`GET /api/assets` 的公开资产记录包含 `content_hash`（服务端导入时计算的 SHA-256）。`POST /api/assets` 会对用户直接上传的完全相同字节做轻量去重：命中已有、文件仍存在的 library 资产时返回 `200` 和 `reused: true`，复用既有 ID，不改名、不移动文件夹。新资产仍返回 `201` 和 `reused: false`。内部任务物化与生成结果不参与这个直传去重，避免共享 ID 导致删除和保留规则耦合。
+
+历史重复记录仍保留独立 ID，前端默认收起它们；用户可展开重复项、多选后显式删除，不会自动删除可能仍被项目引用的旧记录。
+
+资产、普通任务结果和派生结果的公开记录都有持久化 `pinned` 布尔值，分别通过 `PATCH /api/assets/:id`、`PATCH /api/jobs/:id` 和 `PATCH /api/derivations/:id` 更新。列表把置顶项排在普通项之前；任务结果首页可用 `include_pinned=1` 额外取回不在当前分页窗口内的置顶任务，不能因为 cursor 对账而丢掉旧置顶项。结果抽屉同时支持普通任务与派生结果的混合多选和批量删除。
+
+资产文件夹只是组织元数据。`DELETE /api/asset-folders/:id` 删除文件夹本身时，不删除资产或子文件夹：直接内容会移动到被删文件夹的父级；若目标层存在同名子文件夹则返回 `folder_name_conflict`，保持原数据不变。
+
+普通结果保存在 ComfyUI output，任务 JSON 只记录受控相对输出与证据。预览、缩略图、下载都通过 Python API 校验任务/资产记录后读取，不能允许客户端传任意服务器路径。
+
+结果刷新恢复重点：
+
+- `app/studio-history.ts` 把旧 host/port 的媒体 URL 重定位到当前同源 `/api/*`
+- 结果抽屉优先请求 `GET /api/jobs?summary=1&results=1&include_pinned=1`，只取可展示结果的轻量字段，并在首页附带跨分页置顶结果；服务端返回 ETag，未变化时可用 `304`
+- 最近任务会压缩后写入 `sessionStorage`，当前上限 100 条、有效期 10 分钟；缓存只是首屏加速，服务端任务 JSON 仍是事实来源
+- 完成任务的 `<video>` 需要在 URL/任务变化时重新装载
+- 预览和下载支持 `HEAD`、单段字节 `Range`、`If-Range`、ETag 与 Last-Modified；媒体 URL 指向不可变任务输出，因此可长缓存
+- 缩略图失败不能阻止原视频预览和下载
+- 同一缩略图的并发生成按摘要加锁，避免重复启动 ffmpeg；不同缩略图仍受媒体操作并发槽约束
+- 删除任务应先更新 UI，再处理服务端失败回滚或提示
+- 服务端在 `metadata/dataset-id` 保存数据集身份；前端只有在当前 `/api/jobs` 实例验证后才显示 session 缓存。恢复的画布任务不能直接回灌结果库或进入轮询，只有当前服务端列表和当前会话生成回执可以加入可信任务集。
+- `GET /api/jobs` 的首页与 cursor 页都是权威窗口：合并时必须删除该窗口内服务端已不存在的缓存项，包括空的最后一页；同时不得让较晚返回的旧 cursor 覆盖新实例或更深分页状态。
+
+## 7. 长视频子系统
+
+长视频不是单次超过 15 秒的 H3 请求，而是多个合法 H3 分段的持久项目。
+
+前端：
+
+- `app/video-project.ts`：类型、序列时间、参数夹取、引用标签、校验、运行计划
+- `app/video-director-model.ts`：分镜切点、均分、故事板草稿
+- `app/video-director-workspace.tsx`：完整监视器、播放头、源视频与序列视图
+- `app/video-timeline.tsx`：项目加载、编辑、保存、运行和结果通知
+- `app/video-project-api.ts`：REST 客户端
+
+后端 `server/video_projects.py::VideoProjectManager` 负责：
+
+- 项目 CRUD、选段顺序运行、单段重跑与停止
+- `tail_frame`：抽取上一段真实尾帧，作为下一段端点图
+- `previous_video`：创建不超过 15 秒的派生视频参考
+- 失败/停止恢复、下游失效、派生资产回收
+- ffmpeg concat 合并、进度、取消和产物证据
+
+续接与合并使用的是不同资产：续接可以裁剪系统派生副本，最终合并必须使用每段完整输出。
+
+## 8. API 地图
+
+API 路由集中在 `server/app.py::Handler`：
+
+| 分类 | 入口 |
+| --- | --- |
+| 健康与能力 | `GET /health`, `GET /api/capabilities`, `GET /api/workflows/director[/MODE]` |
+| Prompt/生成 | `POST /api/prompts/compile`, `POST /api/generate`, `GET /api/status?id=...` |
+| 任务结果 | `GET /api/jobs`（支持 `summary=1`、`results=1`、`include_pinned=1`、分页与 ETag）, `GET/PATCH/DELETE /api/jobs/:id`, `POST /api/jobs/:id/cancel`, `GET /api/preview`, `GET /api/download`, `GET /api/jobs/:id/thumbnail` |
+| 资产 | `GET/POST /api/assets`, `GET/PATCH/DELETE /api/assets/:id`（PATCH 支持名称、文件夹和置顶）, `GET /api/assets/:id/content|thumbnail`, `POST /api/jobs/:id/assets` |
+| 文件夹 | `GET/POST /api/asset-folders`, `PATCH/DELETE /api/asset-folders/:id`（删除时内容提升到父级） |
+| 派生媒体 | `POST /api/media/derive`, `GET /api/derivations`, `GET/PATCH/DELETE /api/derivations/:id`, `POST /api/derivations/:id/assets` |
+| 分镜分析 | `POST /api/media/analyze-scenes` |
+| 长视频 | `GET/POST /api/video-projects`, `GET/PUT/DELETE /api/video-projects/:id`, `POST .../run|stop|merge`, `POST .../segments/:id/run` |
+| 维护 | `POST /api/maintenance/gc` |
+
+除健康检查外，API Key 开启后都需认证。浏览器写操作还检查 Origin。同源 gateway 在服务端添加 Key，因此 Key 不进入前端 bundle。
+
+## 9. 测试策略
+
+按改动风险选择，不要求固定轮数：
+
+```bash
+# 快速静态检查
+npm run typecheck
+npm run lint
+
+# 单个前端合同测试
+node --test tests/studio-video-mode.test.mjs
+
+# 单个 Python 模块
+python3 -m unittest server.tests.test_workflows -v
+
+# 生产构建
+npm run build
+
+# 完整门禁
+npm test
+```
+
+建议最小矩阵：
+
+| 改动 | 最少验证 |
+| --- | --- |
+| 纯 CSS/文案 | 相关 UI 合同测试 + ESLint；关键布局人工查看 |
+| React 状态/交互 | 相关 Node 测试 + TypeScript + ESLint |
+| Canvas 文档/图算法 | `studio-document` + `studio-graph` + 迁移/刷新测试 |
+| Prompt/模式/Profile | 前后端对应测试同时跑 |
+| 工作流节点图 | `server.tests.test_workflows` + capability 测试；有条件再跑远端 dry/real job |
+| API/存储/安全 | 对应 Python 测试，必要时完整 `npm test` |
+| 长视频执行/合并 | 前端 timeline 测试 + `server.tests.test_video_projects` |
+| 启动/网关/部署 | ops + gateway 测试 + 生产构建 + 健康检查 |
+
+历史 `cycle*` 测试名称保留用于回归，不代表新改动必须重复对应轮数。
+
+## 10. 开发机与发布
+
+推荐的生产部署布局：
+
+```text
+<deployment-root>/
+  current -> releases/<git-short-sha>
+  releases/<git-short-sha>/    不可变代码与构建
+  data/ metadata/ profiles/    持久数据
+  logs/                        运行日志
+  .tools/                      固定 Node 工具链
+```
+
+当前进程由 `python3 scripts/h3studio.py start --port 3013 --internal-port 3014 --api-port 6020` 监督：
+
+- Python API：6020
+- Vinext 内部服务：3014
+- 对浏览器的同源 gateway：3013
+- ComfyUI：6006
+
+安全发布顺序：
+
+1. 本地工作树干净并完成相关检查。
+2. 用 Git 短 SHA 创建独立 tar/release；不要覆盖 `current` 内容。
+3. 在新 release 中复用受控工具链、安装锁定依赖并生产构建。
+4. 确认持久目录和 `.env.local` 指向共享位置。
+5. 原子切换 `current`，短暂重启 supervisor。
+6. 检查 `GET http://127.0.0.1:6020/health`、`http://127.0.0.1:3013/` 和关键 capability。
+7. 失败则恢复旧链接和旧服务；不要修改或删除数据目录。
+
+## 11. 常见跨层修改清单
+
+### 新增视频模式
+
+同时检查：`studio-video-mode.ts`、`studio-document.ts`、`studio.tsx` payload、`workflows.py` 合同/编译、Profile compiler、前后端测试、Director preset。
+
+### 新增模型/Profile
+
+同时检查：`profiles.py` 声明与 compiler baseline、`comfy.py` capability 探测、`workflows.py` 受控构造器、前端 reference policy/参数 schema、许可证字段、测试与 `docs/image-workflows.md`。
+
+### 修改资产角色或编号
+
+同时检查：V7 binding、legacy/V7 双向转换、graph slot、Prompt mention、服务端 `_graph_references`、刷新恢复、FL2V 首尾角色测试。
+
+### 修改结果预览
+
+同时检查：任务列表回执、status 合并、同源 URL 重定位、缩略图、video reload、Range 响应、结果节点和结果抽屉。
+
+### 修改长视频
+
+前端纯模型和后端 manager 都有校验。特别检查选段依赖、续接派生资产、停止/重启恢复、失败下游状态、完整输出合并与 GC 引用。
+
+## 12. 当前技术债与防错提示
+
+- `app/studio.tsx` 体积较大；新增独立领域逻辑优先抽到纯模块并单测，不继续堆入组件。
+- 画布存在 legacy React 状态与 V7 文档双表示；任何字段修改都要验证转换和持久化。
+- `docs/architecture.md` 含早期设计与部分过时容量描述；当前合同以本 Wiki、源码和测试为准。
+- 前端模式校验与后端模式校验重复是刻意的：前者改善体验，后者是安全边界。不要为了 DRY 删除后端验证。
+- ComfyUI workflow JSON 是编译产物，不是浏览器可编辑输入；对外部 workflow 的复用必须落到受控 compiler/Profile。
+- 远端 release 目录不可作为编辑工作区；修复应回到本地 Git，验证、提交、重新发布。
+
+维护规则：当新增顶层模块、API、数据版本、Profile compiler、远端目录或进程入口时，必须同步更新本页对应章节。若页头最后更新时间距当前超过 7 天，下一次开发前必须对照源码、测试、capability 和远端运行拓扑主动校准本文，并记录真实更新日期，不能仅刷新日期。

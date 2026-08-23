@@ -1,0 +1,4 @@
+interface:
+  display_name: "H3 Prompt Compiler"
+  short_description: "Auto-route and optimize MiniMax H3 prompts"
+  default_prompt: "Use $h3-ref2va-prompt-compiler to choose the H3 mode and compile my request into an optimized prompt."

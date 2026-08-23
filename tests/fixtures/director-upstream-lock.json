@@ -1,0 +1,211 @@
+{
+  "schema_version": "1.0",
+  "reviewed_at": "2026-08-22",
+  "upstream": {
+    "repository": "https://github.com/AIMixer/ComfyUI_MiniMaxH3_Director",
+    "commit": "a267324a9f88141ff4e4b0e8c1a6ed90b4e45db7",
+    "locked": true,
+    "license": {
+      "spdx": "Apache-2.0",
+      "file": "LICENSE",
+      "notice_present": false,
+      "scope": "upstream plugin source only",
+      "copied_code": false,
+      "separate_model_and_media_review_required": true
+    }
+  },
+  "integration": {
+    "mode": "specification-adapter-only",
+    "runtime_enabled": false,
+    "direct_plugin_proxy": false,
+    "auto_update": false,
+    "reason": "Reuse the reviewed behavior as an adapter specification; keep H3 Studio profiles, receipts, asset paths, auth and origin checks as the production boundary."
+  },
+  "constraints": {
+    "fps": 24,
+    "frame_grid": "17k+5",
+    "max_generated_segment_frames": 362,
+    "max_generated_segment_seconds": 15.083333333333334,
+    "max_total_references": 6,
+    "reference_budget_includes": [
+      "images",
+      "videos",
+      "audio",
+      "implicit continuity context"
+    ]
+  },
+  "reusable_models": [
+    {
+      "role": "fl2va_unet",
+      "filename": "minimax_h3_fl2va_pruned_int8_convrot.safetensors",
+      "directory": "models/diffusion_models",
+      "modes": ["t2v", "i2v", "fl2v"],
+      "required": true,
+      "license_status": "separate-review-required"
+    },
+    {
+      "role": "ref2va_unet",
+      "filename": "minimax_h3_ref2va_pruned_int8_convrot.safetensors",
+      "directory": "models/diffusion_models",
+      "modes": ["r2v", "v2v", "rv2v"],
+      "required": true,
+      "license_status": "separate-review-required"
+    },
+    {
+      "role": "text_encoder",
+      "filename": "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+      "directory": "models/text_encoders",
+      "loader_type": "minimax",
+      "required": true,
+      "license_status": "separate-review-required"
+    },
+    {
+      "role": "video_vae",
+      "filename": "minimax_h3_video_vae_fp16.safetensors",
+      "directory": "models/vae",
+      "required": true,
+      "license_status": "separate-review-required"
+    },
+    {
+      "role": "audio_vae",
+      "filename": "minimax_h3_audio_vae_fp32.safetensors",
+      "directory": "models/vae",
+      "required": true,
+      "license_status": "separate-review-required"
+    }
+  ],
+  "optional_models": [
+    {
+      "role": "h3_latent_upscaler",
+      "filename": "minimax_h3_latent_upscaler_3d_bf16.safetensors",
+      "directory": "models/latent_upscale_models",
+      "required": false,
+      "default_enabled": false,
+      "license_status": "separate-review-required",
+      "activation_gate": "Pin an independently licensed artifact digest, verify ComfyUI compatibility and pass VRAM, cancellation and rollback acceptance before exposing Refine."
+    }
+  ],
+  "dependencies": {
+    "python": ">=3.10",
+    "comfyui_minimum": "0.30.0",
+    "required_python_packages": [
+      "opencv-python-headless>=4.8",
+      "imageio-ffmpeg>=0.4",
+      "scenedetect>=0.6.4,<0.8"
+    ],
+    "optional_python_packages": [
+      {
+        "requirement": "nvidia-vfx",
+        "index": "https://pypi.nvidia.com",
+        "default_enabled": false,
+        "reason": "NVIDIA RTX VSR only; proprietary, driver-specific and not required for the H3 Studio baseline."
+      }
+    ],
+    "production_policy": "Resolve and hash-lock transitive packages in an isolated release environment; never pip-install into the live current release."
+  },
+  "forbidden_proxy_prefixes": [
+    "/minimax/director/"
+  ],
+  "forbidden_routes": [
+    {
+      "path": "/minimax/director/upload_chunk",
+      "methods": ["POST"],
+      "enabled": false,
+      "proxy": false,
+      "risk": "No H3 Studio upload quota, chunk-count cap or TTL contract."
+    },
+    {
+      "path": "/minimax/director/probe_video",
+      "methods": ["GET", "POST"],
+      "enabled": false,
+      "proxy": false,
+      "risk": "Bypasses receipt-based media identifiers and path containment."
+    },
+    {
+      "path": "/minimax/director/detect_shots",
+      "methods": ["POST"],
+      "enabled": false,
+      "proxy": false,
+      "risk": "Bypasses authenticated asset and bounded media-processing contracts."
+    },
+    {
+      "path": "/minimax/director/enhance_models",
+      "methods": ["POST"],
+      "enabled": false,
+      "proxy": false,
+      "risk": "Client-controlled LLM endpoint and credentials can create SSRF and secret-forwarding exposure."
+    },
+    {
+      "path": "/minimax/director/get_template",
+      "methods": ["POST"],
+      "enabled": false,
+      "proxy": false,
+      "risk": "The entire upstream namespace remains deny-by-default; templates must be versioned in H3 Studio."
+    },
+    {
+      "path": "/minimax/director/enhance",
+      "methods": ["POST"],
+      "enabled": false,
+      "proxy": false,
+      "risk": "Client-controlled LLM egress and hidden prompt mutation are outside the H3 Studio prompt contract."
+    },
+    {
+      "path": "/minimax/director/extract_frames",
+      "methods": ["POST"],
+      "enabled": false,
+      "proxy": false,
+      "risk": "Bypasses receipt-based path containment, media limits and derivation receipts."
+    },
+    {
+      "path": "/minimax/director/image_b64",
+      "methods": ["POST"],
+      "enabled": false,
+      "proxy": false,
+      "risk": "Can expose local media bytes outside the authenticated asset API."
+    },
+    {
+      "path": "/minimax/director/unload_model",
+      "methods": ["POST"],
+      "enabled": false,
+      "proxy": false,
+      "risk": "Client-controlled outbound model-management action."
+    },
+    {
+      "path": "/minimax/director/unload_ollama",
+      "methods": ["POST"],
+      "enabled": false,
+      "proxy": false,
+      "risk": "Client-controlled outbound model-management action."
+    }
+  ],
+  "install_policy": {
+    "state": "reviewed-not-installed",
+    "steps": [
+      "Create a new immutable H3 Studio release and isolated Python environment.",
+      "Clone the upstream repository and checkout the exact locked commit; reject a dirty tree or a different HEAD.",
+      "Resolve and hash-lock dependencies, then install only into the staged release.",
+      "Verify the five required model filenames and separately approved model licenses and digests without downloading them automatically.",
+      "Keep the optional latent upscaler and nvidia-vfx disabled until their separate acceptance gates pass.",
+      "Block every forbidden route at the H3 Studio gateway and verify internal ComfyUI is not browser reachable.",
+      "Run contract, unit, build, dry-run workflow and capability tests before any paid GPU canary.",
+      "Switch the current release symlink only after acceptance and retain the previous release."
+    ]
+  },
+  "rollback": {
+    "data_root_policy": "Shared assets, jobs and receipts stay outside immutable releases and are not rewritten by plugin installation.",
+    "trigger_conditions": [
+      "health or capabilities regression",
+      "forbidden route exposure",
+      "workflow/profile evidence mismatch",
+      "dependency or model incompatibility",
+      "GPU OOM, cancellation or output-integrity failure"
+    ],
+    "steps": [
+      "Stop only the staged or newly promoted Studio and ComfyUI processes.",
+      "Restore the previous current-release symlink and the prior pinned Profile manifest.",
+      "Restart services and verify health, capabilities, assets, jobs, thumbnails and Range downloads.",
+      "Preserve failed-release logs and receipts; do not delete or migrate shared user data.",
+      "Remove the failed immutable release only after evidence is archived and no process references it."
+    ]
+  }
+}

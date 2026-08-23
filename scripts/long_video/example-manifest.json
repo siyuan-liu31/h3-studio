@@ -1,0 +1,78 @@
+{
+  "version": 1,
+  "project": {
+    "title": "Three-shot continuity acceptance",
+    "segments": [
+      {
+        "continuation": "none",
+        "request": {
+          "prompt": "[Shot 1] A cyclist enters a quiet coastal road at sunrise. A wide tracking shot moves alongside her.",
+          "parts": {
+            "sound": "Natural wind, tires on asphalt, distant surf. No music."
+          },
+          "parameters": {
+            "aspect_ratio": "16:9",
+            "duration": 5,
+            "steps": 4,
+            "lora_strength": 0.75,
+            "seed": 101,
+            "mode": "auto"
+          },
+          "profile_id": "minimax-h3-fl-turbo4",
+          "profile_version": "1",
+          "profile_digest": "0000000000000000000000000000000000000000000000000000000000000000",
+          "references": []
+        }
+      },
+      {
+        "continuation": "tail_frame",
+        "request": {
+          "prompt": "[Shot 1] Continuing from the exact prior pose and direction, the cyclist rounds the bend as the camera cranes upward.",
+          "parameters": {
+            "aspect_ratio": "16:9",
+            "duration": 5,
+            "steps": 4,
+            "lora_strength": 0.75,
+            "seed": 102,
+            "mode": "auto"
+          },
+          "profile_id": "minimax-h3-fl-turbo4",
+          "profile_version": "1",
+          "profile_digest": "0000000000000000000000000000000000000000000000000000000000000000",
+          "references": []
+        }
+      },
+      {
+        "continuation": "previous_video",
+        "request": {
+          "prompt": "[Shot 1] Preserve the cyclist, road direction, speed and camera momentum from the previous clip while the lighthouse comes into view.",
+          "parameters": {
+            "aspect_ratio": "16:9",
+            "duration": 5,
+            "steps": 4,
+            "lora_strength": 0.75,
+            "denoise": 0.7,
+            "seed": 103,
+            "mode": "auto"
+          },
+          "profile_id": "minimax-h3-ref-turbo4",
+          "profile_version": "1",
+          "profile_digest": "0000000000000000000000000000000000000000000000000000000000000000",
+          "references": []
+        }
+      }
+    ]
+  },
+  "rerun": {
+    "segment_index": 1,
+    "prompt": "[Shot 1] Continuing from the exact prior pose, the cyclist rounds the bend in one stable low tracking shot.",
+    "seed": 202
+  },
+  "acceptance": {
+    "width": 1344,
+    "height": 768,
+    "expect_audio": true,
+    "duration_tolerance": 0.25,
+    "output_name": "three-shot-acceptance.mp4"
+  }
+}

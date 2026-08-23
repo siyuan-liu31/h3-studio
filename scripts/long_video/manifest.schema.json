@@ -1,0 +1,127 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://h3-studio.local/schemas/long-video-acceptance-v1.json",
+  "title": "H3 Studio long-video acceptance manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "project", "acceptance"],
+  "properties": {
+    "version": { "const": 1 },
+    "project": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["title", "segments"],
+      "properties": {
+        "title": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "segments": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 1000,
+          "items": { "$ref": "#/$defs/segment" }
+        }
+      }
+    },
+    "rerun": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["segment_index", "prompt", "seed"],
+      "properties": {
+        "segment_index": { "type": "integer", "minimum": 0 },
+        "prompt": { "type": "string", "minLength": 1, "maxLength": 12000 },
+        "seed": { "type": "integer", "minimum": -1, "maximum": 9223372036854775807 }
+      }
+    },
+    "acceptance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["width", "height"],
+      "properties": {
+        "width": { "type": "integer", "minimum": 256, "maximum": 2048 },
+        "height": { "type": "integer", "minimum": 256, "maximum": 2048 },
+        "expect_audio": { "const": true, "default": true },
+        "duration_tolerance": { "type": "number", "minimum": 0.04, "maximum": 2, "default": 0.25 },
+        "output_name": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,199}\\.mp4$", "default": "merged.mp4" }
+      }
+    }
+  },
+  "$defs": {
+    "segment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["continuation", "request"],
+      "properties": {
+        "id": { "$ref": "#/$defs/opaqueId" },
+        "continuation": { "enum": ["none", "tail_frame", "previous_video"] },
+        "request": { "$ref": "#/$defs/request" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "continuation": { "enum": ["tail_frame", "previous_video"] } } },
+          "then": { "properties": { "request": { "properties": { "references": { "maxItems": 5 } } } } }
+        }
+      ]
+    },
+    "request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["parameters", "profile_id", "profile_version", "profile_digest", "references"],
+      "properties": {
+        "prompt": { "type": "string", "maxLength": 12000 },
+        "parts": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "subject": { "$ref": "#/$defs/part" }, "action": { "$ref": "#/$defs/part" },
+            "scene": { "$ref": "#/$defs/part" }, "camera": { "$ref": "#/$defs/part" },
+            "light": { "$ref": "#/$defs/part" }, "style": { "$ref": "#/$defs/part" },
+            "dialogue": { "$ref": "#/$defs/part" }, "sound": { "$ref": "#/$defs/part" },
+            "music": { "$ref": "#/$defs/part" }
+          }
+        },
+        "parameters": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["aspect_ratio", "duration", "steps", "seed"],
+          "properties": {
+            "aspect_ratio": { "enum": ["16:9", "9:16"] },
+            "duration": { "type": "number", "minimum": 5, "maximum": 15.083333333333334 },
+            "steps": { "type": "integer", "minimum": 4, "maximum": 50 },
+            "lora_strength": { "type": "number", "minimum": 0, "maximum": 2 },
+            "denoise": { "type": "number", "minimum": 0.05, "maximum": 1 },
+            "seed": { "type": "integer", "minimum": -1, "maximum": 9223372036854775807 },
+            "mode": { "enum": ["auto", "text", "fl2va", "ref2va"] },
+            "ref_image_size": { "enum": ["match", "max"] }
+          }
+        },
+        "profile_id": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "profile_version": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "profile_digest": { "$ref": "#/$defs/sha256" },
+        "references": { "type": "array", "maxItems": 6, "items": { "$ref": "#/$defs/reference" } }
+      },
+      "anyOf": [
+        { "required": ["prompt"] },
+        { "required": ["parts"] }
+      ]
+    },
+    "reference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["role"],
+      "properties": {
+        "id": { "$ref": "#/$defs/opaqueId" },
+        "asset_id": { "$ref": "#/$defs/opaqueId" },
+        "role": { "enum": ["first_frame", "last_frame", "identity", "style", "composition", "reference", "motion", "camera", "pacing", "voice", "music", "rhythm"] },
+        "include_audio": { "type": "boolean" },
+        "voice_speaker": { "type": "string", "pattern": "^[Ss][1-9][0-9]*$" },
+        "voice_subject": { "type": "integer", "minimum": 1, "maximum": 9999 }
+      },
+      "oneOf": [
+        { "required": ["id"], "not": { "required": ["asset_id"] } },
+        { "required": ["asset_id"], "not": { "required": ["id"] } }
+      ]
+    },
+    "part": { "type": "string", "maxLength": 4000 },
+    "opaqueId": { "type": "string", "pattern": "^[0-9a-f]{32}$" },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+  }
+}

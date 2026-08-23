@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://h3-studio.local/schemas/e2e-manifest-v1.json",
+  "title": "H3 Studio remote E2E manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "runs"],
+  "properties": {
+    "version": { "const": 1 },
+    "runs": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["scenario", "prompt"],
+        "properties": {
+          "scenario": { "enum": ["t2i", "img2img", "t2v", "i2v", "fl2va", "ref-image", "ref-video"] },
+          "prompt": { "type": "string", "minLength": 1, "maxLength": 12000 },
+          "assets": { "type": "array", "maxItems": 2, "items": { "type": "string", "minLength": 1 } },
+          "profile_id": { "type": "string" },
+          "sampling_mode": { "enum": ["turbo4", "base"] },
+          "aspect_ratio": { "enum": ["16:9", "9:16"] },
+          "duration": { "type": "number", "minimum": 5, "maximum": 15.083333333333334 },
+          "steps": { "type": "integer", "minimum": 1, "maximum": 100 },
+          "lora_strength": { "type": "number", "minimum": 0, "maximum": 2 },
+          "cfg": { "type": "number", "minimum": 1, "maximum": 30 },
+          "denoise": { "type": "number", "minimum": 0.05, "maximum": 1 },
+          "seed": { "type": "integer", "minimum": -1 },
+          "include_audio": { "type": "boolean" }
+        },
+        "allOf": [
+          {
+            "if": { "properties": { "scenario": { "enum": ["t2v", "i2v", "fl2va", "ref-image", "ref-video"] } } },
+            "then": { "not": { "required": ["cfg"] } }
+          }
+        ]
+      }
+    }
+  }
+}

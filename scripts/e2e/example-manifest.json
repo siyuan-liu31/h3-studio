@@ -1,0 +1,59 @@
+{
+  "version": 1,
+  "runs": [
+    {
+      "scenario": "t2i",
+      "prompt": "A small brass robot in a quiet studio, soft window light",
+      "aspect_ratio": "16:9",
+      "seed": 101
+    },
+    {
+      "scenario": "img2img",
+      "prompt": "Preserve the composition and render it as a cinematic watercolor",
+      "assets": ["fixtures/first.png"],
+      "denoise": 0.55,
+      "seed": 102
+    },
+    {
+      "scenario": "t2v",
+      "prompt": "A brass robot walks through a sunlit studio, slow dolly in, natural room tone",
+      "sampling_mode": "turbo4",
+      "duration": 5.1666666667,
+      "aspect_ratio": "16:9",
+      "seed": 103
+    },
+    {
+      "scenario": "i2v",
+      "prompt": "The robot looks toward the window while the camera gently pushes in",
+      "assets": ["fixtures/first.png"],
+      "sampling_mode": "turbo4",
+      "duration": 5.1666666667,
+      "seed": 104
+    },
+    {
+      "scenario": "fl2va",
+      "prompt": "The robot crosses the room from the first composition into the final composition",
+      "assets": ["fixtures/first.png", "fixtures/last.png"],
+      "sampling_mode": "turbo4",
+      "duration": 5.1666666667,
+      "seed": 105
+    },
+    {
+      "scenario": "ref-image",
+      "prompt": "Preserve the robot identity while it turns and waves once",
+      "assets": ["fixtures/identity.png"],
+      "sampling_mode": "turbo4",
+      "duration": 5.1666666667,
+      "seed": 106
+    },
+    {
+      "scenario": "ref-video",
+      "prompt": "Transfer only the motion rhythm from the reference video to the brass robot",
+      "assets": ["fixtures/motion.mp4"],
+      "sampling_mode": "turbo4",
+      "duration": 5.1666666667,
+      "include_audio": false,
+      "seed": 107
+    }
+  ]
+}
