@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-08-23
+
+### Documentation
+
+- 将生成效果预览改为更轻量的仓库内 GIF，并使用 GitHub 原生 Markdown 图片语法，修复外部 Raw 图片地址加载失败时首页留白的问题。
+
 ## [0.1.3] - 2026-08-23
 
 ### Documentation

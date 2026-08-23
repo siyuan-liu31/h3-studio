@@ -37,15 +37,11 @@ flowchart LR
 
 ## 生成效果示例
 
-下面的高清动图截取自 H3 Studio 生成的 9:16、15.08 秒带音频演示视频，展示有效画面开始后的连续 5 秒。这里只公开无声动图示例，完整生成文件不进入代码仓库。
+下面的轻量动图截取自 H3 Studio 生成的 9:16、15.08 秒带音频演示视频，展示有效画面开始后的连续 5 秒。这里只公开无声动图示例，完整生成文件不进入代码仓库。
 
-<p align="center">
-  <a href="https://raw.githubusercontent.com/siyuan-liu31/h3-studio/v0.1.3/docs/assets/readme/generated-video-preview.gif">
-    <img src="https://raw.githubusercontent.com/siyuan-liu31/h3-studio/v0.1.3/docs/assets/readme/generated-video-preview.gif" width="416" alt="H3 Studio 生成视频高清动图示例：舞台上的动画歌手">
-  </a>
-</p>
+[![H3 Studio 生成视频动图示例：舞台上的动画歌手](docs/assets/readme/generated-video-preview.gif)](docs/assets/readme/generated-video-preview.gif?raw=1)
 
-<p align="center"><sub>如果动图未自动播放，可点击预览打开原始动图。</sub></p>
+[动图未显示？点击这里直接打开原始 GIF。](docs/assets/readme/generated-video-preview.gif?raw=1)
 
 ## 核心能力
 
