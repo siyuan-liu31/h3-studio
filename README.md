@@ -133,6 +133,10 @@ flowchart LR
 - 结果库统一展示生成结果与剪辑派生结果，支持置顶、混合多选、全选当前项、批量删除、预览和下载。
 - 同内容素材按 SHA-256 复用并折叠展示，减少重复上传与存储占用。
 
+### 面向 Agent 的 Go CLI
+
+`h3ctl` 把素材上传下载、生图生视频、任务等待与恢复、首尾帧提取、媒体派生和长视频项目拆成稳定的原子命令。它支持本地文件、远端资产 locator、机器地址可变的 SSH context，以及适合 Agent 解析的 JSON/JSONL 输出。构建、连接和完整命令说明见 [Go CLI 文档](docs/cli.md)。
+
 仓库同时附带一个本地 H3 提示词编译 skill，入口见 [`skills/h3-ref2va-prompt-compiler`](skills/h3-ref2va-prompt-compiler/SKILL.md)。
 
 ## 三步启动

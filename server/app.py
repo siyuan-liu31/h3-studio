@@ -1114,8 +1114,13 @@ class Handler(BaseHTTPRequestHandler):
 
     def _save_derivation(self, receipt_id: str) -> None:
         data = self._read_json()
-        if set(data) - {"display_name", "folder_id"}:
-            raise ApiError(400, "invalid_parameter", "only display_name and folder_id may be supplied")
+        if set(data) - {"display_name", "folder_id", "visibility"}:
+            raise ApiError(400, "invalid_parameter", "only display_name, folder_id and visibility may be supplied")
+        visibility = data.get("visibility", "library")
+        if visibility not in {"library", "internal"}:
+            raise ApiError(400, "invalid_visibility", "visibility must be library or internal")
+        if visibility == "internal" and ({"display_name", "folder_id"} & set(data)):
+            raise ApiError(400, "invalid_parameter", "internal assets cannot have library display_name or folder_id metadata")
         folder_marker: Any = data["folder_id"] if "folder_id" in data else ...
         if folder_marker is not ... and folder_marker is not None:
             folder_marker = validate_id(folder_marker, "folder id")
@@ -1123,7 +1128,7 @@ class Handler(BaseHTTPRequestHandler):
         with self.runtime.result_import_lock:
             public = self.runtime.media.save_as_asset(
                 receipt_id, display_name=display_marker, folder_id=folder_marker,
-                folder_exists=self.runtime.folders.get,
+                folder_exists=self.runtime.folders.get, visibility=visibility,
             )
         self._json(HTTPStatus.CREATED, {**public, "asset": public, "asset_id": public["id"]})
 

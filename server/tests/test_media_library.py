@@ -59,6 +59,22 @@ class MediaServiceTests(unittest.TestCase):
         self.assertIn(receipt["receipt_id"], receipt["content_url"])
         self.assertEqual(self.assets.list(), [], "derivatives must remain results until explicitly saved")
 
+    def test_derivation_can_materialize_internal_then_promote_without_library_pollution(self) -> None:
+        def create_png(_command, destination, **_kwargs):
+            destination.write_bytes(PNG_1X1)
+
+        with patch.object(self.service, "_run", side_effect=create_png), patch.object(
+            AssetStore, "_probe_image", return_value={"width": 1, "height": 1, "codec": "mjpeg"}
+        ):
+            receipt = self.service.derive(self.source, self.meta, {"operation": "frame", "position": "first"})
+            internal = self.service.save_as_asset(receipt["id"], visibility="internal")
+        self.assertEqual(internal["visibility"], "internal")
+        self.assertEqual(self.assets.list_public(), [])
+        promoted = self.service.save_as_asset(receipt["id"], visibility="library", display_name="Visible frame")
+        self.assertEqual(promoted["id"], internal["id"])
+        self.assertEqual(promoted["visibility"], "library")
+        self.assertEqual([item["id"] for item in self.assets.list_public()], [internal["id"]])
+
     def test_trim_rejects_out_of_bounds_but_is_not_limited_by_h3_generation_duration(self) -> None:
         with self.assertRaises(ApiError) as outside:
             self.service.derive(self.source, self.meta, {"operation": "video_trim", "start": 9, "end": 11})
@@ -622,6 +638,32 @@ class LibraryApiTests(unittest.TestCase):
         status, deleted = self.request("DELETE", f"/api/derivations/{receipt_id}")
         self.assertEqual(status, 200, deleted)
         self.assertFalse(source_path.exists())
+
+    def test_derivation_save_endpoint_supports_internal_visibility(self) -> None:
+        receipt_id = "9" * 32
+        source_path = self.runtime.media.root / f"{receipt_id}.png"
+        source_path.write_bytes(PNG_1X1)
+        self.runtime.media.metadata.put(receipt_id, {
+            "id": receipt_id, "kind": "image", "display_name": "derived.png",
+            "filename": "derived.png", "stored_name": source_path.name,
+            "mime_type": "image/png", "size": source_path.stat().st_size,
+            "sha256": hashlib.sha256(source_path.read_bytes()).hexdigest(),
+            "media": {"width": 1, "height": 1}, "created_at": 1,
+        })
+        with patch.object(AssetStore, "_probe_image", return_value={"width": 1, "height": 1, "codec": "png"}):
+            status, invalid = self.request("POST", f"/api/derivations/{receipt_id}/assets", {
+                "visibility": "internal", "display_name": "not allowed",
+            })
+            self.assertEqual((status, invalid["error"]["code"]), (400, "invalid_parameter"))
+            status, internal = self.request("POST", f"/api/derivations/{receipt_id}/assets", {"visibility": "internal"})
+            self.assertEqual(status, 201, internal)
+            self.assertEqual(internal["visibility"], "internal")
+            status, listed = self.request("GET", "/api/assets")
+            self.assertNotIn(internal["asset_id"], {item["id"] for item in listed["assets"]})
+            status, promoted = self.request("POST", f"/api/derivations/{receipt_id}/assets", {"visibility": "library"})
+            self.assertEqual(status, 201, promoted)
+            self.assertEqual(promoted["asset_id"], internal["asset_id"])
+            self.assertEqual(promoted["visibility"], "library")
 
 
 if __name__ == "__main__":

@@ -154,8 +154,8 @@ class ApiIntegrationTests(unittest.TestCase):
         self.thread.join(timeout=2)
         self.temp.cleanup()
 
-    def request(self, method, path, body=None, headers=None):
-        connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=3)
+    def request(self, method, path, body=None, headers=None, *, timeout=3):
+        connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=timeout)
         connection.request(method, path, body=body, headers=headers or {})
         response = connection.getresponse()
         content = response.read()
@@ -523,7 +523,9 @@ class ApiIntegrationTests(unittest.TestCase):
         payload = json.dumps({"title": "1000 segment boundary", "segments": segments}, separators=(",", ":")).encode()
         self.assertGreater(len(payload), self.config.max_json_bytes)
         self.assertLess(len(payload), self.config.max_project_json_bytes)
-        status, _, content = self.request("POST", "/api/video-projects", payload, headers)
+        status, _, content = self.request(
+            "POST", "/api/video-projects", payload, headers, timeout=15,
+        )
         self.assertEqual(status, 201, content[:500])
         self.assertEqual(len(json.loads(content)["segments"]), 1000)
 
@@ -965,6 +967,29 @@ class ApiIntegrationTests(unittest.TestCase):
         self.assertEqual(first["job_id"], second["job_id"])
         self.assertTrue(second["idempotent_replay"])
         self.assertEqual(self.fake.submit_count, 1)
+
+    def test_submission_failure_is_persisted_and_same_request_replays_failed_job(self) -> None:
+        request_id = "9" * 32
+        request_body = json.dumps(
+            {"request_id": request_id, "type": "video", "prompt": "Persist failure"}
+        ).encode()
+        headers = {"Content-Type": "application/json", "X-API-Key": "test-key"}
+        with patch.object(
+            self.fake, "ensure_capability",
+            side_effect=ApiError(503, "comfy_unavailable", "temporary backend failure"),
+        ):
+            first_status, _, first_body = self.request("POST", "/api/generate", request_body, headers)
+        self.assertEqual(first_status, 503, first_body)
+        failed = next(job for job in self.server.runtime.jobs.list() if job["request_id"] == request_id)
+        self.assertEqual((failed["status"], failed["error_code"]), ("failed", "comfy_unavailable"))
+
+        replay_status, _, replay_body = self.request("POST", "/api/generate", request_body, headers)
+        replay = json.loads(replay_body)
+        self.assertEqual(replay_status, 202, replay_body)
+        self.assertEqual(replay["job_id"], failed["job_id"])
+        self.assertEqual(replay["status"], "failed")
+        self.assertTrue(replay["idempotent_replay"])
+        self.assertEqual(len([job for job in self.server.runtime.jobs.list() if job["request_id"] == request_id]), 1)
 
     def test_request_id_reuse_with_different_payload_is_a_conflict(self) -> None:
         headers = {"Content-Type": "application/json", "X-API-Key": "test-key"}

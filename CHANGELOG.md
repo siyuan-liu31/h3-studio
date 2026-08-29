@@ -4,6 +4,22 @@
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-29
+
+### Added
+
+- 新增 Go 客户端 `h3ctl`，为 Agent 提供资产上下载、图像/视频生成、可断线恢复的任务等待、首尾帧与媒体派生、长视频项目以及版本化原子操作合同。
+- 新增本地/开发机 context、统一资源 locator、流式 multipart 上传和 `.part` 原子下载。CLI context 可选 direct URL 或自动生命周期的临时 SSH 端口转发，支持稳定 SSH alias 和租用机地址更新。
+- 媒体派生结果可物化为不污染资产库的 internal asset，需用户显式保存才转为 library asset。
+
+### Fixed
+
+- 强化 CLI 的任意位置 flag、结构化错误、提交断线幂等恢复、重定向凭据隔离、长传输超时和并发下载原子性。
+- 严格校验生成回执与所有服务端资源 ID，修复 operation Draft 2020-12 schema 合法性、跨平台 context 文件锁及旧 context 的敏感 URL 展示风险。
+- Go CLI 移除 API key 参数、环境变量和请求头注入；旧 `api_key_env` 配置可安全读取，下次保存时自然清理。服务端可选鉴权与 Web 网关行为不变。
+- CLI 连接改为按命令懒加载；本地 help/schema/usage 不受离线 SSH context 影响。SSH ready 改用私有 ControlMaster 的 check/forward 确定性握手，再严格验证 H3 health JSON；关闭、reap 与控制目录清理在成功输出前完成且有界。context 同名新增返回冲突，并支持显式清除保存的 SSH port。
+- SSH ControlMaster 的 check/forward/exit 隔离用户 SSH 转发配置，启动取消与截止时间返回稳定错误；H3 health 现严格限定 JSON MIME 与 64 KiB 响应。
+
 ## [0.1.5] - 2026-08-29
 
 ### Documentation

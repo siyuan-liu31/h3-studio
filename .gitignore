@@ -42,6 +42,7 @@ yarn-error.log*
 /.wrangler/
 /outputs/
 /work/
+/cli/h3ctl
 *.tsbuildinfo
 /data/
 /docs/evidence/

@@ -1,6 +1,6 @@
 # H3 Studio LLM Wiki
 
-> 最后更新：2026-08-23（Asia/Shanghai）。面向后续开发 Agent 的代码地图；具体发布版本以 Git 和开发机 `current` 软链接为准。实现事实优先级：源码与测试 > capability/API 回执 > 本文 > 历史 evidence 文档。
+> 最后更新：2026-08-29（Asia/Shanghai）。面向后续开发 Agent 的代码地图；具体发布版本以 Git 和开发机 `current` 软链接为准。实现事实优先级：源码与测试 > capability/API 回执 > 本文 > 历史 evidence 文档。
 
 ## 1. 先看这里
 
@@ -62,6 +62,14 @@ scripts/
   h3studio.py                  doctor/install/start 的唯一推荐管理入口
   start.mjs                    生产前端子进程与网关生命周期
   gateway.mjs                  同源网关；服务端注入 API Key，不暴露给浏览器
+
+cli/
+  cmd/h3ctl/                   Go CLI 进程入口
+  internal/api/                短连接 HTTP、流式上传、原子下载和 API 错误
+  internal/command/            人类命令树与 --help（薄层）
+  internal/operation/          Agent/workflow 可复用原子能力
+  internal/resource/          file:/asset:/job:/media:/h3:// locator
+  internal/contract,output/    版本化 JSON/JSONL 回执与稳定退出码
 
 skills/
   h3-ref2va-prompt-compiler/   项目附带的单一本地 H3 提示词编译 skill
@@ -270,12 +278,29 @@ API 路由集中在 `server/app.py::Handler`：
 | 任务结果 | `GET /api/jobs`（支持 `summary=1`、`results=1`、`include_pinned=1`、分页与 ETag）, `GET/PATCH/DELETE /api/jobs/:id`, `POST /api/jobs/:id/cancel`, `GET /api/preview`, `GET /api/download`, `GET /api/jobs/:id/thumbnail` |
 | 资产 | `GET/POST /api/assets`, `GET/PATCH/DELETE /api/assets/:id`（PATCH 支持名称、文件夹和置顶）, `GET /api/assets/:id/content|thumbnail`, `POST /api/jobs/:id/assets` |
 | 文件夹 | `GET/POST /api/asset-folders`, `PATCH/DELETE /api/asset-folders/:id`（删除时内容提升到父级） |
-| 派生媒体 | `POST /api/media/derive`, `GET /api/derivations`, `GET/PATCH/DELETE /api/derivations/:id`, `POST /api/derivations/:id/assets` |
+| 派生媒体 | `POST /api/media/derive`, `GET /api/derivations`, `GET/PATCH/DELETE /api/derivations/:id`, `POST /api/derivations/:id/assets`（支持 `visibility=internal|library`） |
 | 分镜分析 | `POST /api/media/analyze-scenes` |
 | 长视频 | `GET/POST /api/video-projects`, `GET/PUT/DELETE /api/video-projects/:id`, `POST .../run|stop|merge`, `POST .../segments/:id/run` |
 | 维护 | `POST /api/maintenance/gc` |
 
 除健康检查外，API Key 开启后都需认证。浏览器写操作还检查 Origin。同源 gateway 在服务端添加 Key，因此 Key 不进入前端 bundle。
+
+### 8.1 Go CLI 自动化边界
+
+`cli/cmd/h3ctl` 是面向 Agent 与脚本的正式 API 客户端，不替代 Python API，也不复制 `workflows.py` 的编译逻辑。命令层只解析参数，`internal/operation` 承载可供未来 workflow DAG 直接调用的原子能力。
+
+- 生成使用“提交 `job_id` + 短请求轮询”；CLI 断开不取消服务端任务，`Ctrl-C` 默认只停止本地等待。
+- `--control-timeout` 是控制面 HTTP 超时；transfer/media 超时独立且默认无限。`job wait --timeout` 是总等待超时。
+- 显式 Profile 先读 `/api/capabilities`，自动附加 `profile_version` 和 `manifest_sha256` 作为 `profile_digest`。
+- JSON stdout 使用 `h3ctl.output/v1` 信封，进度/日志写 stderr；JSONL 生成等待先输出 `submitted` 再输出状态事件。提交断连用同一 request ID 和 payload 恢复。
+- 资源定位统一为本地路径、`asset:ID`、`job:ID#INDEX`、`media:ID` 与 `h3://CONTEXT/assets/ID`。本地生成输入先流式上传，job/派生结果先物化为 internal asset。
+- 下载使用同目录唯一 `.part`；非 force 原子 no-replace，force 完成后原子替换。HTTP 不跟随重定向。
+- CLI context 二选一：direct 保存 HTTP(S) URL；SSH 保存 target/可选 SSH port/remote API port。SSH 上下文每条真正需要 API 的命令创建私有临时 ControlMaster：先 `-O check` 确认认证后的 master，再用 `-O forward` 让同一 master 确定性绑定转发；master 仍读取 alias 的 HostName/User/Identity/ProxyJump/Port，但命令行禁用 fork、remote command、TTY 和 alias 预配转发。私有 check/forward/exit 调用使用 `-F none` 隔离用户配置，forward 仅携带一条 CLI 所有的 `-L`。端口冲突有限重分配，只有 forward 成功后才严格验证 H3 `/health` JSON（拒绝重定向、非精确 JSON content-type、超过 64 KiB、尾随内容和第二个 JSON）。forward 阶段 Ctrl-C 返回 `interrupted`，启动截止返回 `ssh_start_timeout`。命令结束后在输出成功信封前有界 exit/stop/wait/reap 并删除控制目录；清理失败返回 `ssh_cleanup_failed`，业务失败时仍保留主错误并附 cleanup details。长时 `job wait` 期间会话保持；不支持 ControlMaster 的运行环境明确失败，不回退到 listener 猜测。所有 help/unknown usage、workflow/completion、operation list/schema 与 context 配置命令都是纯本地；只有 `context test` 主动测试连接。`asset copy` 的 typed/operation 入口都只建立 source/destination 会话并合并双方 cleanup 错误。建议 target 使用 `~/.ssh/config` 别名，租用机地址变化时只改 HostName/Port；`context update --clear-ssh-port` 可恢复 SSH config 的 Port。SSH 固定加 `-n` 避免抢占 spec/input stdin，Agent 再用 `--non-interactive` 加 `BatchMode=yes`；凭据交给 SSH config/ssh-agent，CLI 不保存密码。
+- V2V/RV2V 的 `source_asset_id` 在 Go Prepare 层解析为 asset，并以 `motion` 角色去重、置于 references 首位，与 Python workflow 合同一致。
+- operation registry、递归 input schema、校验与执行均在 `internal/operation`；`command operation` 只做 stdin/flag/output adapter。全部公开 schema 必须通过 Draft 2020-12 标准编译器测试。
+- 服务端资源 ID 统一为 32 位小写十六进制；创建、上传、派生、物化与生成回执在进入下一步前验证。context 写操作使用 Unix/Windows 真正的跨进程文件锁串行化，旧配置在展示前重新规范化且不会回显非法 URL。
+
+完整用法和当前未支持边界见 `docs/cli.md`。
 
 ## 9. 测试策略
 
@@ -285,6 +310,13 @@ API 路由集中在 `server/app.py::Handler`：
 # 快速静态检查
 npm run typecheck
 npm run lint
+
+# Go CLI 门禁
+cd cli
+gofmt -w .
+go test ./...
+go vet ./...
+go build ./cmd/h3ctl
 
 # 单个前端合同测试
 node --test tests/studio-video-mode.test.mjs

@@ -133,6 +133,10 @@ flowchart LR
 - Browse generated and derived editing results together, with pinning, mixed multi-select, select-all for the current view, bulk deletion, preview, and download.
 - Identical content is reused by SHA-256 and collapsed in the interface, reducing duplicate uploads and storage.
 
+### Go CLI for Agent automation
+
+`h3ctl` exposes stable atomic commands for asset upload/download, image and video generation, resumable job waiting, endpoint-frame extraction, media derivation, and long-video projects. It supports local files, remote asset locators, SSH contexts for changing rented-machine addresses, and Agent-friendly JSON/JSONL output. See the [Go CLI guide](docs/cli.md) for build, connection, and command details.
+
 The repository also includes one local H3 prompt compiler skill at [`skills/h3-ref2va-prompt-compiler`](skills/h3-ref2va-prompt-compiler/SKILL.md).
 
 ## Start in three steps

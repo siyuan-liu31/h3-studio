@@ -617,6 +617,18 @@ class RequestTests(unittest.TestCase):
             with self.subTest(fields=fields), self.assertRaises(ApiError):
                 parse_generation_request({"type": "video", "prompt": "invalid", **fields}, lookup)
 
+    def test_unknown_generation_parameters_are_rejected_instead_of_ignored(self) -> None:
+        with self.assertRaisesRegex(ApiError, "duraton"):
+            parse_generation_request({
+                "type": "video", "prompt": "typo",
+                "parameters": {"duration": 5, "duraton": 6},
+            }, lookup)
+        with self.assertRaisesRegex(ApiError, "duration"):
+            parse_generation_request({
+                "type": "image", "prompt": "wrong modality",
+                "parameters": {"duration": 5},
+            }, lookup)
+
     def test_rv2v_preview_and_generation_share_source_first_readonly_prompt(self) -> None:
         request = {
             "type": "video",

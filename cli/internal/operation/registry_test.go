@@ -1,0 +1,282 @@
+package operation
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	jsonschema "github.com/santhosh-tekuri/jsonschema/v6"
+
+	"h3studio/cli/internal/api"
+	"h3studio/cli/internal/contract"
+)
+
+func decodeObject(t *testing.T, raw string) map[string]any {
+	t.Helper()
+	value := map[string]any{}
+	if err := json.Unmarshal([]byte(raw), &value); err != nil {
+		t.Fatal(err)
+	}
+	return value
+}
+
+func TestRegistryDeepSchemaRejectsNestedTyposTypesAndRanges(t *testing.T) {
+	tests := []struct {
+		name, input string
+	}{
+		{"generate.video", `{"prompt":"x","director_mode":"t2v","parameters":{"duraton":5}}`},
+		{"generate.video", `{"prompt":"x","director_mode":"r2v","references":[{"source":"asset:a","asset_id":"a","role":"identity"}]}`},
+		{"generate.video", `{"prompt":"x","director_mode":"t2v","parameters":{"duration":"5"}}`},
+		{"generate.video", `{"prompt":"x","director_mode":"t2v","parameters":{"duration":4}}`},
+		{"generate.image", `{"prompt":"x","parameters":{"cfg":31}}`},
+		{"project.run", `{"project_id":"p","segment_ids":[1]}`},
+		{"project.run", `{"project_id":"p","segment_ids":["s","s"]}`},
+	}
+	for _, test := range tests {
+		if err := ValidateInput(test.name, decodeObject(t, test.input)); err == nil {
+			t.Errorf("%s accepted %s", test.name, test.input)
+		}
+	}
+}
+
+func TestPublishedSchemaDescribesNestedContracts(t *testing.T) {
+	schema, ok := Schema("generate.video")
+	if !ok {
+		t.Fatal("missing generate.video")
+	}
+	properties := schema["properties"].(map[string]any)
+	references := properties["references"].(map[string]any)
+	items := references["items"].(map[string]any)
+	parameters := properties["parameters"].(map[string]any)
+	if len(items["oneOf"].([]any)) != 3 || parameters["additionalProperties"] != false {
+		t.Fatalf("schema=%v", schema)
+	}
+	if _, ok := parameters["properties"].(map[string]any)["duration"]; !ok {
+		t.Fatal("duration contract missing")
+	}
+	project, _ := Schema("project.run")
+	segment := project["properties"].(map[string]any)["segment_ids"].(map[string]any)
+	if segment["items"].(map[string]any)["type"] != "string" {
+		t.Fatalf("segment schema=%v", segment)
+	}
+}
+
+func TestEveryPublishedSchemaCompilesAsDraft202012(t *testing.T) {
+	for _, definition := range Definitions() {
+		t.Run(definition.Name, func(t *testing.T) {
+			compiler := jsonschema.NewCompiler()
+			location := "https://h3ctl.invalid/operations/" + definition.Name
+			if err := compiler.AddResource(location, definition.InputSchema); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := compiler.Compile(location); err != nil {
+				t.Fatalf("invalid Draft 2020-12 schema: %v\nschema=%#v", err, definition.InputSchema)
+			}
+		})
+	}
+}
+
+func TestRegistryAndExecuteCoverWorkflowAtoms(t *testing.T) {
+	required := []string{"asset.copy", "media.endpoints", "media.save", "media.download", "project.create", "project.apply", "project.list", "project.get", "project.wait", "project.run", "project.merge", "project.download", "job.list", "job.get", "job.wait", "job.cancel", "job.download", "job.save", "job.delete", "generate.image", "generate.video"}
+	names := map[string]bool{}
+	for _, definition := range Definitions() {
+		names[definition.Name] = true
+	}
+	for _, name := range required {
+		if !names[name] {
+			t.Errorf("missing operation %s", name)
+		}
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/media/derive" {
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]any{"receipt_id": strings.Repeat("d", 32)})
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "/download") {
+			_, _ = io.WriteString(w, "media")
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": "completed"})
+	}))
+	defer server.Close()
+	runtime := Runtime{Service: &Service{API: api.New(server.URL, time.Second), Context: "test", PollInterval: time.Millisecond}, CopyAsset: func(_ context.Context, source, destination string) (map[string]any, error) {
+		return map[string]any{"source": source, "destination_context": destination}, nil
+	}}
+	value, err := Execute(context.Background(), runtime, "asset.copy", decodeObject(t, `{"source":"h3://src/assets/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","to_context":"dev"}`))
+	if err != nil || value.(map[string]any)["destination_context"] != "dev" {
+		t.Fatalf("copy value=%v err=%v", value, err)
+	}
+	value, err = Execute(context.Background(), runtime, "media.endpoints", decodeObject(t, `{"source":"asset:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`))
+	if err != nil || value.(map[string]any)["first"] == nil || value.(map[string]any)["last"] == nil {
+		t.Fatalf("endpoints value=%v err=%v", value, err)
+	}
+	to := filepath.Join(t.TempDir(), "media.bin")
+	if _, err := Execute(context.Background(), runtime, "media.download", map[string]any{"media_id": strings.Repeat("d", 32), "to": to}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestEveryPublishedOperationExecutesAndRejectsUnknownInput(t *testing.T) {
+	idA, idB, idC, idD := strings.Repeat("a", 32), strings.Repeat("b", 32), strings.Repeat("c", 32), strings.Repeat("d", 32)
+	type capturedRequest struct {
+		method, path string
+		body         map[string]any
+	}
+	var captured []capturedRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body := map[string]any{}
+		if strings.Contains(r.Header.Get("Content-Type"), "application/json") && r.Body != nil {
+			_ = json.NewDecoder(r.Body).Decode(&body)
+		}
+		captured = append(captured, capturedRequest{method: r.Method, path: r.URL.RequestURI(), body: body})
+		switch {
+		case r.URL.Path == "/api/assets" && r.Method == http.MethodPost:
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]any{"asset_id": idA})
+		case r.URL.Path == "/api/generate":
+			w.WriteHeader(http.StatusAccepted)
+			_ = json.NewEncoder(w).Encode(map[string]any{"job_id": idB})
+		case r.URL.Path == "/api/status":
+			_ = json.NewEncoder(w).Encode(map[string]any{"status": "completed", "job_id": idB})
+		case r.URL.Path == "/api/media/derive":
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]any{"receipt_id": idC})
+		case strings.HasSuffix(r.URL.Path, "/assets"):
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]any{"asset_id": idA})
+		case strings.Contains(r.URL.Path, "/download") || strings.HasSuffix(r.URL.Path, "/content"):
+			_, _ = io.WriteString(w, "download")
+		case r.URL.Path == "/api/video-projects/"+idD && r.Method == http.MethodGet:
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": idD, "status": "completed"})
+		default:
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": idD, "asset_id": idA, "status": "ok"})
+		}
+	}))
+	defer server.Close()
+	temp := t.TempDir()
+	upload := filepath.Join(temp, "upload.bin")
+	if err := os.WriteFile(upload, []byte("upload"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	copyCalls := 0
+	runtime := Runtime{
+		Service: &Service{API: api.NewWithTimeouts(server.URL, time.Second, time.Second, time.Second), Context: "test", PollInterval: time.Millisecond},
+		CopyAsset: func(_ context.Context, source, destination string) (map[string]any, error) {
+			copyCalls++
+			return map[string]any{"source": source, "destination_context": destination}, nil
+		},
+	}
+	tests := []struct {
+		name, input, method, path, bodyKey string
+		bodyValue                          any
+		calls                              int
+	}{
+		{"asset.upload", fmt.Sprintf(`{"path":%q,"kind":"video"}`, upload), "POST", "/api/assets", "", nil, 1},
+		{"asset.download", fmt.Sprintf(`{"asset_id":%q,"to":%q}`, idA, filepath.Join(temp, "asset.bin")), "GET", "/api/assets/" + idA + "/content", "", nil, 1},
+		{"asset.list", `{}`, "GET", "/api/assets", "", nil, 1},
+		{"asset.copy", fmt.Sprintf(`{"source":"h3://source/assets/%s","to_context":"dev"}`, idA), "", "", "", nil, 0},
+		{"generate.image", `{"prompt":"image"}`, "POST", "/api/generate", "output_type", "image", 1},
+		{"generate.video", `{"prompt":"video","director_mode":"t2v"}`, "POST", "/api/generate", "output_type", "video", 1},
+		{"job.list", `{}`, "GET", "/api/jobs?limit=20", "", nil, 1},
+		{"job.get", fmt.Sprintf(`{"job_id":%q}`, idB), "GET", "/api/jobs/" + idB, "", nil, 1},
+		{"job.wait", fmt.Sprintf(`{"job_id":%q,"timeout_seconds":1,"poll_seconds":0.001}`, idB), "GET", "/api/status?id=" + idB, "", nil, 1},
+		{"job.cancel", fmt.Sprintf(`{"job_id":%q}`, idB), "POST", "/api/jobs/" + idB + "/cancel", "", nil, 1},
+		{"job.download", fmt.Sprintf(`{"job_id":%q,"to":%q}`, idB, filepath.Join(temp, "job.bin")), "GET", "/api/download?id=" + idB + "&index=0", "", nil, 1},
+		{"job.save", fmt.Sprintf(`{"job_id":%q}`, idB), "POST", "/api/jobs/" + idB + "/assets", "visibility", "library", 1},
+		{"job.workflow", fmt.Sprintf(`{"job_id":%q}`, idB), "GET", "/api/jobs/" + idB + "/workflow", "", nil, 1},
+		{"job.delete", fmt.Sprintf(`{"job_id":%q}`, idB), "DELETE", "/api/jobs/" + idB, "", nil, 1},
+		{"media.frame", fmt.Sprintf(`{"source":"asset:%s","position":"first"}`, idA), "POST", "/api/media/derive", "position", "first", 1},
+		{"media.endpoints", fmt.Sprintf(`{"source":"asset:%s"}`, idA), "POST", "/api/media/derive", "position", "last", 2},
+		{"media.trim", fmt.Sprintf(`{"source":"asset:%s","start":0,"end":1}`, idA), "POST", "/api/media/derive", "operation", "video_trim", 1},
+		{"media.extract_audio", fmt.Sprintf(`{"source":"asset:%s"}`, idA), "POST", "/api/media/derive", "operation", "extract_audio", 1},
+		{"media.remove_audio", fmt.Sprintf(`{"source":"asset:%s"}`, idA), "POST", "/api/media/derive", "operation", "remove_audio", 1},
+		{"media.list", `{}`, "GET", "/api/derivations", "", nil, 1},
+		{"media.get", fmt.Sprintf(`{"media_id":%q}`, idC), "GET", "/api/derivations/" + idC, "", nil, 1},
+		{"media.download", fmt.Sprintf(`{"media_id":%q,"to":%q}`, idC, filepath.Join(temp, "media.bin")), "GET", "/api/derivations/" + idC + "/download", "", nil, 1},
+		{"media.save", fmt.Sprintf(`{"media_id":%q}`, idC), "POST", "/api/derivations/" + idC + "/assets", "visibility", "library", 1},
+		{"media.delete", fmt.Sprintf(`{"media_id":%q}`, idC), "DELETE", "/api/derivations/" + idC, "", nil, 1},
+		{"project.create", `{"spec":{"title":"project"}}`, "POST", "/api/video-projects", "title", "project", 1},
+		{"project.apply", fmt.Sprintf(`{"project_id":%q,"spec":{"title":"project"}}`, idD), "PUT", "/api/video-projects/" + idD, "title", "project", 1},
+		{"project.list", `{}`, "GET", "/api/video-projects", "", nil, 1},
+		{"project.get", fmt.Sprintf(`{"project_id":%q}`, idD), "GET", "/api/video-projects/" + idD, "", nil, 1},
+		{"project.delete", fmt.Sprintf(`{"project_id":%q}`, idD), "DELETE", "/api/video-projects/" + idD, "", nil, 1},
+		{"project.run", fmt.Sprintf(`{"project_id":%q,"segment_ids":[%q]}`, idD, idA), "POST", "/api/video-projects/" + idD + "/run", "segment_ids", []any{idA}, 1},
+		{"project.wait", fmt.Sprintf(`{"project_id":%q,"timeout_seconds":1,"poll_seconds":0.001}`, idD), "GET", "/api/video-projects/" + idD, "", nil, 1},
+		{"project.stop", fmt.Sprintf(`{"project_id":%q}`, idD), "POST", "/api/video-projects/" + idD + "/stop", "", nil, 1},
+		{"project.rerun", fmt.Sprintf(`{"project_id":%q,"segment_id":%q}`, idD, idA), "POST", "/api/video-projects/" + idD + "/segments/" + idA + "/run", "", nil, 1},
+		{"project.merge", fmt.Sprintf(`{"project_id":%q}`, idD), "POST", "/api/video-projects/" + idD + "/merge", "", nil, 1},
+		{"project.download", fmt.Sprintf(`{"project_id":%q,"to":%q}`, idD, filepath.Join(temp, "project.bin")), "GET", "/api/video-projects/" + idD + "/merged/download", "", nil, 1},
+	}
+	if len(tests) != len(Definitions()) {
+		t.Fatalf("execution matrix has %d cases for %d definitions", len(tests), len(Definitions()))
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			input := decodeObject(t, test.input)
+			before, beforeCopy := len(captured), copyCalls
+			if _, err := Execute(context.Background(), runtime, test.name, input); err != nil {
+				t.Fatalf("positive execution failed: %v", err)
+			}
+			if len(captured)-before != test.calls {
+				t.Fatalf("requests=%v", captured[before:])
+			}
+			if test.calls > 0 {
+				last := captured[len(captured)-1]
+				if last.method != test.method || last.path != test.path {
+					t.Fatalf("got %s %s, want %s %s", last.method, last.path, test.method, test.path)
+				}
+				if test.bodyKey != "" && fmt.Sprint(last.body[test.bodyKey]) != fmt.Sprint(test.bodyValue) {
+					t.Fatalf("body=%v, want %s=%v", last.body, test.bodyKey, test.bodyValue)
+				}
+			} else if copyCalls != beforeCopy+1 {
+				t.Fatal("local copy behavior was not invoked")
+			}
+			negative := decodeObject(t, test.input)
+			negative["unexpected"] = true
+			before, beforeCopy = len(captured), copyCalls
+			if _, err := Execute(context.Background(), runtime, test.name, negative); err == nil {
+				t.Fatal("unknown input was accepted")
+			}
+			if len(captured) != before || copyCalls != beforeCopy {
+				t.Fatal("negative input performed external work")
+			}
+		})
+	}
+}
+
+func TestNonIdempotentCreateInvalidIDsAreNotMarkedRetryable(t *testing.T) {
+	for _, test := range []struct {
+		name, input string
+		status      int
+		response    string
+	}{
+		{"project.create", `{"spec":{"title":"x"}}`, http.StatusCreated, `{"id":"INVALID"}`},
+		{"media.save", `{"media_id":"cccccccccccccccccccccccccccccccc"}`, http.StatusCreated, `{"asset_id":"INVALID"}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			calls := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				w.WriteHeader(test.status)
+				_, _ = io.WriteString(w, test.response)
+			}))
+			defer server.Close()
+			runtime := Runtime{Service: &Service{API: api.New(server.URL, time.Second), Context: "test"}}
+			_, err := Execute(context.Background(), runtime, test.name, decodeObject(t, test.input))
+			var typed *contract.CLIError
+			if !errors.As(err, &typed) || typed.Code != "invalid_response" || typed.Retryable || calls != 1 {
+				t.Fatalf("calls=%d err=%#v", calls, err)
+			}
+		})
+	}
+}

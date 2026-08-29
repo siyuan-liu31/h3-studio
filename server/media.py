@@ -409,8 +409,10 @@ class MediaService:
 
     def save_as_asset(
         self, receipt_id: str, *, display_name: Any = ..., folder_id: Any = ...,
-        folder_exists: Callable[[str], Any] | None = None,
+        folder_exists: Callable[[str], Any] | None = None, visibility: str = "library",
     ) -> dict[str, Any]:
+        if visibility not in {"library", "internal"}:
+            raise ApiError(400, "invalid_visibility", "visibility must be library or internal")
         with self._mutation_lock, self._lock:
             value = self.get(receipt_id)
             existing = value.get("asset_id")
@@ -421,7 +423,10 @@ class MediaService:
                     if error.status != 404:
                         raise
                 else:
-                    if display_name is not ... or folder_id is not ...:
+                    if visibility == "library" and (
+                        asset.get("visibility", "library") == "internal"
+                        or display_name is not ... or folder_id is not ...
+                    ):
                         asset = self.assets.update_library_metadata(
                             existing,
                             display_name=display_name,
@@ -444,10 +449,11 @@ class MediaService:
                     original_filename=str(original_name),
                     requested_kind=str(value["kind"]),
                     claimed_content_type=str(value["mime_type"]),
+                    visibility=visibility,
                 )
                 if self._stored_bytes() > self.config.max_asset_storage_bytes:
                     raise ApiError(507, "asset_quota", "normalized media would exceed the asset storage quota")
-                if display_name is not ... or folder_id is not ...:
+                if visibility == "library" and (display_name is not ... or folder_id is not ...):
                     asset = self.assets.update_library_metadata(
                         str(asset["id"]),
                         display_name=display_name,
@@ -455,6 +461,7 @@ class MediaService:
                         folder_exists=folder_exists,
                     )
                 value["asset_id"] = asset["id"]
+                value["asset_visibility"] = visibility
                 value["saved_at"] = time.time()
                 self.metadata.put(receipt_id, value)
             except Exception:

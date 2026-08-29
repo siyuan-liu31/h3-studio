@@ -1120,6 +1120,22 @@ def parse_generation_request(
     for source, destination in aliases.items():
         if source in data and destination not in parameters:
             parameters[destination] = data[source]
+    allowed_parameters = {
+        "aspect_ratio", "resolution", "width", "height", "steps", "seed",
+        "denoise", "lora_strength",
+    }
+    if output_type == "image":
+        allowed_parameters.update({"cfg", "negative_prompt"})
+    else:
+        allowed_parameters.update({
+            "duration", "ref_image_size", "mode", "director_mode", "source_asset_id",
+        })
+    unknown_parameters = sorted(set(parameters) - allowed_parameters)
+    if unknown_parameters:
+        raise ApiError(
+            400, "invalid_parameter",
+            f"unknown generation parameter: {unknown_parameters[0]}",
+        )
     references, graph_prompt = _graph_references(data.get("graph"), lookup_asset, output_type)
     explicit = _explicit_references(
         data.get("references", data.get("assets")), lookup_asset
