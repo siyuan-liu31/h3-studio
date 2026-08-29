@@ -1,6 +1,10 @@
 # H3 Studio
 
 <p align="center">
+  简体中文 · <a href="README.en.md">English</a> · <a href="README.ja.md">日本語</a>
+</p>
+
+<p align="center">
   <strong>面向本地与远程 ComfyUI 的节点式 MiniMax H3 视觉创作工作台</strong>
 </p>
 

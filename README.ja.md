@@ -1,0 +1,268 @@
+# H3 Studio
+
+<p align="center">
+  <a href="README.md">简体中文</a> · <a href="README.en.md">English</a> · 日本語
+</p>
+
+<p align="center">
+  <strong>ローカル／リモート ComfyUI に対応した、ノードベースの MiniMax H3 ビジュアル制作ワークスペース</strong>
+</p>
+
+<p align="center">
+  動画生成 · 画像生成／編集 · マルチモーダル参照 · 長尺動画の分割生成／継続 · アセット／結果管理
+</p>
+
+<p align="center">
+  <a href="#3-ステップで起動">3 ステップで起動</a> ·
+  <a href="docs/installation.md">インストールガイド</a> ·
+  <a href="docs/h3-prompt-guide.md">H3 プロンプトガイド</a> ·
+  <a href="docs/long-video.md">長尺動画ガイド</a> ·
+  <a href="docs/releasing.md">リリース規約</a>
+</p>
+
+H3 Studio は、素材、プロンプト、モデルパラメータ、生成結果を永続化可能な 1 枚のキャンバス上で管理します。ブラウザはノード構成、参照素材の紐付け、プレビュー、プロジェクト管理を担当し、Python サービスは安全なアップロード、ワークフローのコンパイル、ComfyUI キュー、結果のダウンロードと復元を担当します。キャンバスは自動保存され、複数の独立したワークフローを同時に管理できます。
+
+> 以下の画面では、ユーザーが公開を許可したデモ素材を使用しています。元の素材、モデルの重み、生成動画ファイルはリポジトリに含まれません。
+
+<p align="center">
+  <img src="docs/assets/readme/canvas-workflow.png" width="100%" alt="画像参照、H3 動画ノード、出力ノードで構成された H3 Studio のノードキャンバス">
+</p>
+
+```mermaid
+flowchart LR
+  P[画像参照] --> V[H3 動画ノード]
+  M[動画／音声参照] --> V
+  P --> I[画像生成ノード]
+  V --> O[出力ノード]
+  I --> O
+  O --> R[結果ライブラリ]
+  R -. 明示的に保存 .-> A[アセットライブラリ]
+```
+
+## 生成結果のプレビュー
+
+以下の軽量アニメーションは、H3 Studio で生成した 9:16、15.08 秒、音声付き動画のうち、有効な映像が始まってからの連続 5 秒を切り出したものです。公開しているのは無音のアニメーションだけで、完全な生成ファイルはリポジトリに含まれません。
+
+[![H3 Studio の生成動画プレビュー：ステージで歌うアニメキャラクター](docs/assets/readme/generated-video-preview.gif)](docs/assets/readme/generated-video-preview.gif?raw=1)
+
+[アニメーションが表示されない場合は、元の GIF を直接開いてください。](docs/assets/readme/generated-video-preview.gif?raw=1)
+
+## 主な機能
+
+### ノードキャンバス
+
+- 画像、動画、音声の参照ノードと、H3 動画、画像生成、出力ノードを 1 枚のキャンバス上で構成できます。
+- `@` を入力して現在のノード素材を参照します。接続線と明示的に選択したモードから、実際に実行するワークフローが決まります。
+- 画像編集、動画クリップ、フレーム抽出は新しい結果ノードを作成し、アセットライブラリへ自動登録しません。再利用したい場合だけ、ノードのコンテキストメニューからアセットへ保存します。
+- ローカルの画像、動画、音声をキャンバスへドラッグできます。ノード内のメディアをローカルアップロードと誤認することはありません。
+- 更新後もキャンバス、アセット、タスクの状態を復元でき、結果のプレビューとダウンロードに対応します。
+
+### 7 種類の動画制作モード
+
+<p align="center">
+  <img src="docs/assets/readme/video-modes.png" width="760" alt="Auto、T2V、I2V、FL2V、R2V、V2V、RV2V を選択できる H3 Video ノード">
+</p>
+
+| モード | 用途 | 入力条件 |
+| --- | --- | --- |
+| `Auto` | ノード接続に応じてワークフローを自動選択 | 素早い構成に最適 |
+| `T2V` | テキストから動画を生成 | テキストプロンプトのみ |
+| `I2V` | 1 枚の画像から動画を生成 | 開始画像 1 枚 |
+| `FL2V` | 最初と最後のフレームから動画を生成 | 端点画像 1～2 枚 |
+| `R2V` | マルチモーダル参照から動画を生成 | 画像、動画、音声を合計 6 件まで |
+| `V2V` | 元動画をリメイク | 元動画を明示的に 1 件選択 |
+| `RV2V` | 元動画 + マルチモーダル参照 | 元動画と追加参照を別々に紐付け |
+
+H3 動画は 16:9、9:16、24 FPS に対応します。長さは実際の `17k+5` フレームグリッドに従い、124～362 フレーム、約 5.17～15.08 秒です。サンプリングには Turbo LoRA または公式ベース Profile を選択できます。画面には解決済みのモデル、サンプラー、ステップ数、LoRA、スケジューラーパラメータが表示され、ワークフローのプレビューを実際のタスク実行証拠として扱うことはありません。
+
+### 複数モデルによる画像生成／編集
+
+<p align="center">
+  <img src="docs/assets/readme/image-models.png" width="760" alt="Image Generation ノードの画像モデル選択画面">
+</p>
+
+| モデル／ワークフロー | 対応方式 | 適した用途 |
+| --- | --- | --- |
+| Z-Image Turbo BF16 / INT8 | テキスト画像生成、実験的な単一画像 latent img2img | 高速な写実表現と中国語／英語テキスト。BF16 は標準の高画質設定 |
+| Z-Image Turbo + コミュニティ LoRA | テキスト画像生成、実験的な単一画像 latent img2img | モデルに紐付いたパラメータを監査できる独立 Profile |
+| Qwen-Image 2512 | 高品質なテキスト画像生成 | ポートレート、自然なディテール、文字レイアウト |
+| Qwen-Image Edit 2511 | 指示による単一画像編集 | 主体を維持しながら背景、服装、局所的な意味を変更 |
+| FLUX.2 Klein 4B / 9B | テキスト画像生成、順序付き画像参照 1～4 枚 | 複数画像の人物、服装、シーン、スタイルの組み合わせ |
+| Anything V5 | Checkpoint によるテキスト画像生成／画像変換 | 互換性フォールバック |
+
+画像生成は 1K/2K と 16:9、9:16、3:4、1:1 に対応します。プロンプト内で「画像 1」「画像 2」のように複数画像の関係を記述すると、参照スロットの順序どおりに紐付けられます。未公開の Z-Image-Edit は利用不可の機能として表示し、latent img2img を指示編集と偽ることはありません。ライセンスと正確なワークフローは [画像ワークフロー文書](docs/image-workflows.md) を参照してください。
+
+### 長尺動画：分割生成と継続
+
+長尺動画ワークスペースでは、既存動画と生成待ちのセグメントを同じタイムラインに配置できます。プレビュー、分割、イン／アウト点の調整、空白セグメントの作成に加え、選択したセグメントまたは依存順での実行に対応します。
+
+<p align="center">
+  <img src="docs/assets/readme/long-video-editor.png" width="100%" alt="モニター、絵コンテタイムライン、既存素材セグメントを備えた H3 Studio 長尺動画エディター">
+</p>
+
+各生成待ちセグメントは、独立生成、前セグメントの最終フレームからの継続、または前セグメントの動画を Ref2VA 参照として使う方法を選べます。継続設定、アスペクト比、有効時間、サンプリング Profile、LoRA 強度、Seed はプロジェクトとともに保存されます。
+
+<p align="center">
+  <img src="docs/assets/readme/long-video-continuation.png" width="100%" alt="前セグメントの動画から継続生成する長尺動画セグメントの設定画面">
+</p>
+
+```mermaid
+flowchart LR
+  S1[セグメント 1] --> C{セグメント 2 の継続方法}
+  C -->|継続なし| N[独立生成]
+  C -->|前セグメントの最終フレーム| F[最終フレームを Picture 1 に指定]
+  C -->|前セグメントの動画| V[動画を Ref2VA 参照に指定]
+  N --> S2[セグメント 2]
+  F --> S2
+  V --> S2
+  S2 --> S3[後続セグメント]
+  S1 --> Merge[順番に結合]
+  S2 --> Merge
+  S3 --> Merge
+```
+
+- 各セグメントは約 5.17～15.08 秒に対応します。失敗したセグメントは再実行でき、上流の変更時には依存する下流セグメントを無効化して再計算できます。
+- 完成した 362 フレームのセグメントを次の動画参照に使う場合、システムが派生させた 15 秒の参照コピーだけを切り詰めます。最終結合では完全なセグメントを使用します。
+- 結合には FFmpeg による監査可能なハードカットを使用します。自動で継ぎ目のない映像／音声接続を実現するとは表明しません。
+- タスク停止、計画に沿った生成、長尺動画の結合、完成動画のダウンロードに対応します。完全な仕様は [長尺動画文書](docs/long-video.md) を参照してください。
+
+### アセット／結果管理
+
+- 画像、動画、音声のアセットをキャンバス間で再利用でき、検索、フォルダー、ピン留め、複数選択、一括削除に対応します。
+- フォルダーを削除しても、フォルダー自体だけが削除されます。中のアセットと子フォルダーは自動的に親階層へ移動するため、メディアを誤って削除しません。
+- 生成結果と編集による派生結果をまとめて表示し、ピン留め、種類をまたぐ複数選択、現在の表示項目の全選択、一括削除、プレビュー、ダウンロードに対応します。
+- 同一内容の素材は SHA-256 により再利用し、画面上でもまとめて表示することで、重複アップロードとストレージ使用量を削減します。
+
+リポジトリには、ローカル H3 プロンプトコンパイラー skill が 1 つだけ付属しています。入口は [`skills/h3-ref2va-prompt-compiler`](skills/h3-ref2va-prompt-compiler/SKILL.md) です。
+
+## 3 ステップで起動
+
+> [!IMPORTANT]
+> ワンコマンドスクリプトは、ロックされた Node 依存関係のインストール、フロントエンドのビルド、サービスの起動を行います。Python、Node.js、FFmpeg、ComfyUI、カスタムノード、モデルをシステムへインストールするものではありません。新しいマシンでは、先に [完全なインストール／運用ガイド](docs/installation.md) を確認してください。
+
+必要環境：
+
+- Node.js `>=22.13`
+- Python `>=3.11`
+- npm、`ffmpeg`、`ffprobe`
+- 選択した Profile に必要なノードとモデルを備え、接続可能な ComfyUI
+- 任意：`scenedetect>=0.6.4,<0.8`。未導入の場合、スマートシーン分割は FFmpeg へ自動フォールバックします
+
+プロジェクトルートで実行します：
+
+1. 設定をコピーし、ComfyUI URL、データディレクトリ、モデルファイル名を確認して、サンプル API Key を強力なランダム値へ変更します。
+
+   ```bash
+   cp .env.example .env.local
+   # エディターで .env.local を編集
+   ```
+
+2. ロックされた Node 依存関係をインストールし、本番ビルドを作成します。
+
+   ```bash
+   python3 scripts/h3studio.py install
+   ```
+
+3. 依存関係と ComfyUI を確認してから、API と本番フロントエンドを起動します。
+
+   ```bash
+   python3 scripts/h3studio.py doctor --check-comfy
+   python3 scripts/h3studio.py start
+   ```
+
+`http://127.0.0.1:3013` を開きます。`start` はフロントエンドとバックエンドの両方を監視し、片方が終了した場合はもう片方も停止します。`Ctrl-C` で両方を正常に終了できます。
+
+### 管理コマンド
+
+```bash
+# 確認のみ。システムは変更しない
+python3 scripts/h3studio.py doctor
+
+# インストール／起動コマンドを実行せずに表示
+python3 scripts/h3studio.py install --dry-run
+python3 scripts/h3studio.py start --dry-run
+
+# ポートを指定。3 つのポートはすべて異なる値にする
+python3 scripts/h3studio.py start --port 3013 --internal-port 3014 --api-port 6020
+```
+
+`doctor` は Python、Node.js、npm、FFmpeg/FFprobe、プロジェクトファイル、フロントエンドの依存関係／ビルド、API Key の接続を確認します。`--check-comfy` を付けると ComfyUI の `/system_stats` も確認します。依存関係のダウンロードは行わず、すべての Profile に必要なノードとモデルが揃っていることまでは保証できません。起動後は `/api/capabilities` と画面の利用可否メッセージを正として確認してください。同等の npm コマンドは `npm run doctor`、`npm run install:studio`、`npm run start:studio` です。
+
+## ローカル開発
+
+```bash
+npm ci
+cp .env.example .env.local
+
+# ターミナル A：API
+set -a && source .env.local && set +a
+python3 -m server
+
+# ターミナル B：フロントエンド。/api は 6020 へプロキシ
+set -a && source .env.local && set +a
+npm run dev -- --host 127.0.0.1 --port 3013
+```
+
+API Key を有効にする場合は、同じ値をサーバー側の `H3_STUDIO_API_KEY` とフロントエンドプロキシプロセスの `H3_STUDIO_PROXY_API_KEY` にだけ設定します。キーがブラウザバンドルへ入ることはありません。
+
+## AutoDL／リモートアクセス
+
+既定では、API、内部フロントエンド、公開入口はいずれも loopback のみで待ち受けます。リモートマシンでサービスを起動した後、ローカルで SSH トンネルを作成します。
+
+```bash
+# リモートマシン
+python3 scripts/h3studio.py start
+
+# ローカルマシン：同一オリジンのフロントエンド入口だけを転送
+ssh -N -L 16020:127.0.0.1:3013 -p <PORT> <SSH_USER>@<HOST>
+```
+
+`http://127.0.0.1:16020` を開きます。トンネルを省くためだけに `0.0.0.0` を公開しないでください。公開アクセスが必要な場合は、ファイアウォール、TLS リバースプロキシ、強力な API Key を構成してください。モデル、素材、生成結果、API Key、SSH パスワードを Git にコミットしてはいけません。
+
+## 主な設定
+
+[`.env.example`](.env.example) を基準にしてください。`h3studio.py` はプロジェクトルートの `.env.local` を自動で読み込みます。`--env-file <path>` で別のファイルも指定でき、既存プロセスの環境変数が優先されます。
+
+| 変数 | 用途 |
+| --- | --- |
+| `COMFY_URL` | ComfyUI の HTTP アドレス |
+| `H3_STUDIO_HOST` / `H3_STUDIO_PORT` | Python API の待受アドレス／ポート。既定値は `127.0.0.1:6020` |
+| `H3_STUDIO_WEB_HOST` / `PORT` / `H3_STUDIO_INTERNAL_WEB_PORT` | 公開フロントエンドのアドレス、公開ポート、内部ポート |
+| `H3_STUDIO_DATA_ROOT` | アセット／タスクメタデータのディレクトリ。リモート環境ではデータボリュームを推奨 |
+| `H3_STUDIO_COMFY_INPUT` / `H3_STUDIO_COMFY_OUTPUT` | ComfyUI の入力／出力ディレクトリ |
+| `H3_STUDIO_*_MODEL` / `H3_STUDIO_*_LORA` | モデル Profile が使用するファイル名 |
+| `H3_STUDIO_API_KEY` / `H3_STUDIO_PROXY_API_KEY` | API 検証と同一オリジンプロキシに使用する同一のキー |
+| `H3_STUDIO_COMFY_IDLE_FREE_SECONDS` | ComfyUI のグローバルキューがアイドルになってから `/free` を呼ぶまでの秒数。`0` で無効化 |
+| `H3_STUDIO_MAX_ASSET_STORAGE_BYTES` | アセットストレージ上限 |
+| `H3_STUDIO_MAX_ACTIVE_JOBS` | アクティブタスク上限 |
+| `H3_STUDIO_MAX_PROJECT_JSON_BYTES` | 長尺動画プロジェクト定義の上限。既定値は 32 MiB |
+| `H3_STUDIO_ASSET_TTL_DAYS` | 管理者が手動でガベージコレクションを実行する際の既定保持日数 |
+
+外部 Profile は `H3_STUDIO_DATA_ROOT/profiles/*.json` に配置します。マニフェストから選択できるのは、コード上でレビュー済みのワークフローコンパイラーだけです。新しい種類にはアダプターとテストが必要で、マニフェストから任意の ComfyUI graph、パス、コマンドを実行することはできません。変数、モデルディレクトリ、トラブルシューティングの詳細は [インストールガイド](docs/installation.md) を参照してください。
+
+## プロジェクト構成
+
+```text
+app/       React ノードキャンバス／ワークスペース UI
+server/    Python 標準ライブラリ API、ストレージ、タスク、ComfyUI ワークフローコンパイル
+scripts/   インストール、起動、診断、長尺動画、運用ツール
+skills/    付属する単一の H3 Prompt Compiler skill
+docs/      インストール、アーキテクチャ、モデルワークフロー、リリース規約、LLM コードマップ
+tests/     フロントエンドのビルド、レンダリング、ソース契約テスト
+```
+
+開発に参加する前に [AGENTS.md](AGENTS.md) と [LLM Wiki](docs/llm-wiki.md) を確認してください。ユーザー向けの変更は [Changelog](CHANGELOG.md) に記録しています。LLM Wiki は現在の実装をたどるための入口です。
+
+## テスト
+
+```bash
+npm test
+```
+
+このコマンドは ESLint、TypeScript チェック、本番ビルド、レンダリングテスト、Python の単体／API／長尺動画／運用テストを順番に実行します。
+
+## 機能上の境界
+
+H3 Studio は、ローカルの H3-Base 768p を公式未公開の Context-IR/2K パイプラインとして扱いません。また、いわゆる「公式 NSFW スイッチ」やモデレーション回避機能も提供しません。運用者は合法な成人向けコンテンツにローカルモデルポリシーを設定できますが、未成年者、同意のない親密なコンテンツ、実在人物を無断で用いた性的ディープフェイク、違法行為、権利侵害に関わるコンテンツは拒否しなければなりません。
+
+H3 のスケジューラーノイズ除去率は `BasicScheduler.denoise` に直接対応し、CFG、LoRA 強度、または実証済みの参照保持ウェイトではありません。モデル、ノード、ライセンスの正確な情報は `/api/capabilities`、[画像ワークフロー](docs/image-workflows.md)、各タスクに保存された証拠を参照してください。
