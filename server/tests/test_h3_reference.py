@@ -136,6 +136,24 @@ class ReferenceMediaTests(unittest.TestCase):
         self.assertEqual(self.service.metadata.list(), [])
         self.assertEqual(list(self.service.root.iterdir()), [])
 
+    def test_probe_uses_ffprobe_44_compatible_full_sections_and_reads_rotation(self) -> None:
+        payload = {
+            "streams": [{
+                "index": 0, "codec_type": "video", "codec_name": "h264", "pix_fmt": "yuv420p",
+                "width": 1920, "height": 1080, "duration": "1.5", "avg_frame_rate": "24/1",
+                "nb_frames": "36", "side_data_list": [{"rotation": -90}],
+            }],
+            "format": {"duration": "1.5", "format_name": "mov,mp4"},
+        }
+        completed = subprocess.CompletedProcess([], 0, stdout=json.dumps(payload), stderr="")
+        with patch("server.storage.subprocess.run", return_value=completed) as run:
+            media = AssetStore._probe_media(self.source, "video")
+        command = run.call_args.args[0]
+        self.assertIn("-show_streams", command)
+        self.assertIn("-show_format", command)
+        self.assertNotIn("stream_side_data=rotation", " ".join(command))
+        self.assertEqual(media["rotation"], 270)
+
     @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "ffmpeg is required")
     def test_real_ffmpeg_output_is_h264_yuv420p_24fps_aligned_and_audio_controlled(self) -> None:
         source = self.root / "real.mp4"

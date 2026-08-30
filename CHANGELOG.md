@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-08-31
+
+### Fixed
+
+- 参考媒体探测改用 ffprobe 4.4 兼容的完整 stream/format 查询，避免旧版 ffprobe 因不支持 `stream_side_data` 精确选择器而拒绝所有视频上传与预处理。
+
 ## [0.3.0] - 2026-08-31
 
 ### Added

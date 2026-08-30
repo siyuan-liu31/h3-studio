@@ -248,8 +248,7 @@ class AssetStore:
     @staticmethod
     def _probe_media(path: Path, expected_kind: str) -> dict[str, Any]:
         command = [
-            "ffprobe", "-v", "error", "-show_entries",
-            "format=duration,format_name:stream=index,codec_type,codec_name,pix_fmt,width,height,duration,avg_frame_rate,r_frame_rate,nb_frames,sample_rate,channels:stream_tags=rotate:stream_side_data=rotation",
+            "ffprobe", "-v", "error", "-show_streams", "-show_format",
             "-of", "json", str(path),
         ]
         try:

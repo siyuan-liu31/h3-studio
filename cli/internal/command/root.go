@@ -18,7 +18,7 @@ import (
 	"h3studio/cli/internal/output"
 )
 
-const Version = "0.3.0"
+const Version = "0.3.1"
 
 type IOStreams struct {
 	In       io.Reader
