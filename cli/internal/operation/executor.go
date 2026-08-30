@@ -76,6 +76,32 @@ func Execute(ctx context.Context, runtime Runtime, name string, input map[string
 			return s.API.Download(ctx, path+"?download=1", to, boolValue(input["force"]))
 		}
 		return s.API.Get(ctx, path)
+	case "job.resume":
+		submitted, err := s.Resume(ctx, require("job_id"), intValue(input["additional_steps"], 0), stringValue(input["request_id"], ""))
+		if err != nil {
+			return nil, err
+		}
+		jobID := stringValue(submitted["job_id"], "")
+		result := map[string]any{"submitted": submitted, "job_id": jobID, "request_id": submitted["request_id"]}
+		if !boolValue(input["wait"]) && stringValue(input["download"], "") == "" {
+			return result, nil
+		}
+		if runtime.OnEvent != nil {
+			runtime.OnEvent(map[string]any{"type": "submitted", "job_id": jobID, "request_id": submitted["request_id"]})
+		}
+		completed, err := s.Wait(ctx, jobID, WaitOptions{Timeout: durationSeconds(input["timeout_seconds"]), PollInterval: durationSeconds(input["poll_seconds"]), OnEvent: runtime.OnEvent})
+		if err != nil {
+			return nil, err
+		}
+		result["completed"] = completed
+		if destination := stringValue(input["download"], ""); destination != "" {
+			downloaded, err := s.API.Download(ctx, "/api/download?id="+url.QueryEscape(jobID)+"&index=0", destination, boolValue(input["force"]))
+			if err != nil {
+				return nil, err
+			}
+			result["download"] = downloaded
+		}
+		return result, nil
 	case "job.delete":
 		return jsonAction(ctx, s, http.MethodDelete, "/api/jobs/"+url.PathEscape(require("job_id")), nil)
 	case "media.frame":
@@ -104,6 +130,23 @@ func Execute(ctx context.Context, runtime Runtime, name string, input map[string
 		body := map[string]any{"operation": strings.TrimPrefix(name, "media.")}
 		copyOptional(body, input, "display_name")
 		return s.Derive(ctx, require("source"), body)
+	case "media.prepare_reference":
+		body := map[string]any{
+			"operation":      "prepare_h3_reference",
+			"max_short_edge": intValue(input["max_short_edge"], 480),
+			"max_long_edge":  intValue(input["max_long_edge"], 864),
+			"fps":            intValue(input["fps"], 24),
+			"max_duration":   numberValue(input["max_duration"], 15),
+			"fit":            stringValue(input["fit"], "contain"),
+			"alignment":      intValue(input["alignment"], 32),
+			"pad_mode":       stringValue(input["pad_mode"], "edge"),
+		}
+		copyOptional(body, input, "preset", "audio", "display_name")
+		value, err := s.DeriveWithEvents(ctx, require("source"), body, runtime.OnEvent)
+		if err == nil {
+			value["locator"] = "media:" + stringValue(value["id"], "")
+		}
+		return value, err
 	case "media.list":
 		return s.API.Get(ctx, "/api/derivations")
 	case "media.get":
@@ -262,6 +305,13 @@ func boolValue(value any) bool {
 func intValue(value any, fallback int) int {
 	if numeric, ok := value.(float64); ok {
 		return int(numeric)
+	}
+	return fallback
+}
+
+func numberValue(value any, fallback float64) float64 {
+	if numeric, ok := value.(float64); ok {
+		return numeric
 	}
 	return fallback
 }

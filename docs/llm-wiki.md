@@ -1,6 +1,6 @@
 # H3 Studio LLM Wiki
 
-> 最后更新：2026-08-29（Asia/Shanghai）。面向后续开发 Agent 的代码地图；具体发布版本以 Git 和开发机 `current` 软链接为准。实现事实优先级：源码与测试 > capability/API 回执 > 本文 > 历史 evidence 文档。
+> 最后更新：2026-08-31（Asia/Shanghai）。面向后续开发 Agent 的代码地图；具体发布版本以 Git 和开发机 `current` 软链接为准。实现事实优先级：源码与测试 > capability/API 回执 > 本文 > 历史 evidence 文档。
 
 ## 1. 先看这里
 
@@ -26,7 +26,9 @@ Browser :3013
 | Profile、模型可用性、参数边界 | `app/studio-capabilities.ts`, `server/profiles.py`, `server/comfy.py` | `tests/studio-capabilities.test.mjs`, `server/tests/test_profiles.py`, `server/tests/test_comfy.py` |
 | ComfyUI 工作流图 | `server/workflows.py` | `server/tests/test_workflows.py`, `tests/source-contracts.test.mjs` |
 | 资产库、缩略图、剪辑派生 | `app/studio-library.ts`, `server/storage.py`, `server/media.py` | `tests/studio-library.test.mjs`, `server/tests/test_media_library.py` |
+| H3 参考视频低 Token 预处理与风险策略 | `server/h3_reference.py`, `server/media.py`, `server/app.py` | `server/tests/test_h3_reference.py`, `tests/studio-library.test.mjs` |
 | 普通任务历史、预览、下载、删除 | `app/studio-history.ts`, `app/result-preview.ts`, `server/app.py` | `tests/studio-history.test.mjs`, `tests/result-preview.test.mjs`, `server/tests/test_app.py` |
+| H3 Base latent 断点续采 | `server/checkpoints.py`, `server/workflows.py`, `server/profiles.py` | `server/tests/test_checkpoints.py`, `tests/studio-history.test.mjs` |
 | 长视频模型与 UI | `app/video-project.ts`, `app/video-timeline.tsx`, `app/video-director-*.tsx` | `tests/video-timeline*.test.mjs`, `tests/video-director-model.test.mjs` |
 | 长视频执行、续接、合并 | `server/video_projects.py` | `server/tests/test_video_projects.py` |
 | 启动、网关、远端运维 | `scripts/h3studio.py`, `scripts/start.mjs`, `scripts/gateway.mjs` | `scripts/ops/tests/test_h3studio.py`, `tests/gateway.test.mjs` |
@@ -54,6 +56,9 @@ server/
   comfy.py                     ComfyUI HTTP、能力检测、队列、取消、内存治理
   storage.py                   JSON 元数据与资产持久化
   media.py                     ffmpeg 派生、缩略图、派生资产生命周期
+  media_tasks.py               H3 参考预处理后台任务、进度、取消与重启回执
+  h3_reference.py              H3 参考尺寸、Token 估算与 sm120/Sage 安全策略
+  checkpoints.py               最新 checkpoint、TTL/GC、续采身份校验与 staging
   video_projects.py            长视频项目执行器、续接、停止、合并、恢复
   prompting.py                 H3 Prompt 标签替换及 FL/Ref 模板编译
   security.py                  ID、文件名、路径与媒体签名安全边界
@@ -183,6 +188,7 @@ PromptMentionComposer
 Handler._generate
   -> parse_generation_request
   -> registry.choose / profile identity validation
+  -> H3 Ref2VA Token 风险预检；必要时 prepare_h3_reference
   -> comfy.ensure_capability
   -> compile_workflow
   -> workflow_evidence + workflow_sha256 持久化
@@ -191,6 +197,8 @@ Handler._generate
 ```
 
 `server/workflows.py::compile_workflow` 按 compiler 分发到 H3、checkpoint、Z-Image、Qwen 或 FLUX.2 构造器。不要让外部清单直接提供任意 ComfyUI graph；新增 compiler 必须写受控构造器和测试。
+
+H3 Base Profile 的 `resume` 声明包含固定调度版本、最大总步数和允许追加范围。首次任务用完整固定 sigma schedule 的前段采样；`SaveLatent` 保存采样器当前状态，预览单独解码 denoised estimate。续采使用 `LoadLatent + DisableNoise + SplitSigmas`，只执行新增 sigma 段，禁止把预览视频重新加噪。Turbo LoRA Profile 未经验证，不声明续采。
 
 ### 5.3 H3 资源与内存
 
@@ -211,8 +219,10 @@ $H3_STUDIO_DATA_ROOT/
   metadata/jobs/            普通生成任务 JSON
   metadata/asset-folders/   文件夹 JSON
   metadata/derivations/     剪辑派生回执
+  metadata/checkpoints/     每条续采链的最新 checkpoint 清单
   metadata/video-projects/  长视频项目（由 manager 使用）
   derivations/              裁剪、抽帧、分离音频等文件
+  checkpoints/              原子保存的最新 latent（每链一个）
   thumbnails/               缩略图缓存
   tmp/                      有界临时文件
   profiles/                 外部 Profile 清单
@@ -221,6 +231,10 @@ $H3_STUDIO_DATA_ROOT/
 资产上传由 `server/storage.py::AssetStore` 流式接收、识别、探测并规范化。视频参考会生成 24 FPS 兼容副本；原始授权/来源元数据与用户文件不能随代码部署覆盖。
 
 剪辑与抽帧由 `POST /api/media/derive` 产生独立的派生结果回执，不自动进入资产库。`GET /api/derivations` 恢复结果抽屉；删除画布节点不删除回执，只有用户在结果中显式删除才会清理派生文件。画布节点右键或结果卡片的“保存到资产”调用 `POST /api/derivations/:id/assets`，并在回执中记录 `asset_id`。
+
+`prepare_h3_reference` 同样位于媒体派生层：先应用旋转元数据，按 contain 保持比例，不放大小素材，将内容放入 32 对齐的最小 edge-pad 画布，输出最长 15 秒、24 FPS、H.264/YUV420P。幂等键由源 SHA-256、算法版本和受控参数组成；原素材永不覆盖。前端与 CLI 使用 `background=true` 获得 `media-task` 回执，再通过 `GET /api/media-tasks/:id` 恢复进度或 `POST /api/media-tasks/:id/cancel` 协作取消；同步调用仍用于服务端内部安全编排。`sm120 + SageAttention` 长序列安全策略由 capability 公开，阈值默认 150000，可通过环境配置。
+
+`CheckpointManager` 每条链只保留一个最新 latent。新文件复制、哈希和原子换名成功后才交换清单并删除旧文件；失败/取消保留旧点。启动和后台 GC 清理过期、已删除及孤儿文件，跳过活跃链。默认 TTL 48 小时，配置范围 24–72 小时；staging 位于 `ComfyUI/input/h3-studio-checkpoints`，与普通资产上传根隔离。
 
 `GET /api/assets` 的公开资产记录包含 `content_hash`（服务端导入时计算的 SHA-256）。`POST /api/assets` 会对用户直接上传的完全相同字节做轻量去重：命中已有、文件仍存在的 library 资产时返回 `200` 和 `reused: true`，复用既有 ID，不改名、不移动文件夹。新资产仍返回 `201` 和 `reused: false`。内部任务物化与生成结果不参与这个直传去重，避免共享 ID 导致删除和保留规则耦合。
 
@@ -275,7 +289,7 @@ API 路由集中在 `server/app.py::Handler`：
 | --- | --- |
 | 健康与能力 | `GET /health`, `GET /api/capabilities`, `GET /api/workflows/director[/MODE]` |
 | Prompt/生成 | `POST /api/prompts/compile`, `POST /api/generate`, `GET /api/status?id=...` |
-| 任务结果 | `GET /api/jobs`（支持 `summary=1`、`results=1`、`include_pinned=1`、分页与 ETag）, `GET/PATCH/DELETE /api/jobs/:id`, `POST /api/jobs/:id/cancel`, `GET /api/preview`, `GET /api/download`, `GET /api/jobs/:id/thumbnail` |
+| 任务结果 | `GET /api/jobs`（支持 `summary=1`、`results=1`、`include_pinned=1`、分页与 ETag）, `GET/PATCH/DELETE /api/jobs/:id`, `POST /api/jobs/:id/cancel|resume`, `GET /api/preview`, `GET /api/download`, `GET /api/jobs/:id/thumbnail` |
 | 资产 | `GET/POST /api/assets`, `GET/PATCH/DELETE /api/assets/:id`（PATCH 支持名称、文件夹和置顶）, `GET /api/assets/:id/content|thumbnail`, `POST /api/jobs/:id/assets` |
 | 文件夹 | `GET/POST /api/asset-folders`, `PATCH/DELETE /api/asset-folders/:id`（删除时内容提升到父级） |
 | 派生媒体 | `POST /api/media/derive`, `GET /api/derivations`, `GET/PATCH/DELETE /api/derivations/:id`, `POST /api/derivations/:id/assets`（支持 `visibility=internal|library`） |
@@ -290,6 +304,7 @@ API 路由集中在 `server/app.py::Handler`：
 `cli/cmd/h3ctl` 是面向 Agent 与脚本的正式 API 客户端，不替代 Python API，也不复制 `workflows.py` 的编译逻辑。命令层只解析参数，`internal/operation` 承载可供未来 workflow DAG 直接调用的原子能力。
 
 - 生成使用“提交 `job_id` + 短请求轮询”；CLI 断开不取消服务端任务，`Ctrl-C` 默认只停止本地等待。
+- `media prepare-reference` 与 `media.prepare_reference` 共用服务端派生；本地输入先上传，CLI 本机不需要 ffmpeg。`job resume` 与 `job.resume` 只提交任务 ID、追加步数和幂等 request ID，可继续等待/下载。
 - `--control-timeout` 是控制面 HTTP 超时；transfer/media 超时独立且默认无限。`job wait --timeout` 是总等待超时。
 - 显式 Profile 先读 `/api/capabilities`，自动附加 `profile_version` 和 `manifest_sha256` 作为 `profile_digest`。
 - JSON stdout 使用 `h3ctl.output/v1` 信封，进度/日志写 stderr；JSONL 生成等待先输出 `submitted` 再输出状态事件。提交断连用同一 request ID 和 payload 恢复。

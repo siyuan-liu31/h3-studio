@@ -734,6 +734,12 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 
 /* Non-destructive media derivation controls. */
 .save-derived { width: calc(100% - 18px); min-height: 29px; margin: 7px 9px 0; border: 1px solid #3f7567; border-radius: 6px; background: #16352e; color: #b6e7da; cursor: pointer; font-size: 8px; }
+.h3-reference-prepare, .result-resume-panel { display: grid; gap: 6px; margin-top: 8px; padding: 8px; border: 1px solid #3f5265; border-radius: 7px; background: #121d28; }
+.h3-reference-prepare label, .result-resume-panel label { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.h3-reference-prepare select, .result-resume-panel input { min-width: 72px; border: 1px solid #526579; border-radius: 5px; background: #0e1720; color: #dce9f5; }
+.h3-reference-prepare small, .result-resume-panel small { color: #91a6b9; line-height: 1.35; }
+.h3-reference-prepare progress { width: 100%; accent-color: var(--teal); }
+.h3-reference-prepare .cancel-media-task { border-color: #70404b; color: #f3a2ad; background: #2a171c; }
 .media-tools { margin: 8px 9px 0; padding: 7px; border: 1px solid #303746; border-radius: 7px; background: #0c1119; }
 .media-tools summary { color: #aaa2ef; font-size: 8px; cursor: pointer; }
 .media-tools > button, .media-tool-grid button, .media-current-frame button { min-height: 27px; border: 1px solid #3a4251; border-radius: 5px; background: #191f29; color: #cbd1dc; cursor: pointer; font-size: 7px; }

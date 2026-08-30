@@ -4,6 +4,19 @@
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-31
+
+### Added
+
+- 新增 H3 参考视频低 Token 预处理：保持方向和宽高比，输出 24 FPS、最长 15 秒、32 像素对齐的 H.264/YUV420P 派生视频，并提供幂等、可审计回执及 `h3ctl media prepare-reference` 原子能力；耗时处理采用可恢复后台任务，前端与 CLI 均可查看进度、取消和重试。
+- 新增 `sm120 + SageAttention` 长序列风险预检；命中版本化安全策略时，服务端自动物化内部派生参考并在任务与工作流证据中记录原始/派生映射。
+- H3 Base Profile 新增真正的 latent/sigma 断点续采，支持 `POST /api/jobs/:id/resume`、`h3ctl job resume`、前端任意追加步数、等待和下载。每条链仅保留最新检查点，默认 48 小时过期并定期 GC。
+
+### Changed
+
+- `minimax-h3-fl2va-base` 与 `minimax-h3-ref2va-base` Profile 升级到 `1.1`，能力检测新增 `SplitSigmas`、`SaveLatent`、`LoadLatent` 和 `DisableNoise` 节点要求；Turbo Profile 仍明确不开放续采。
+- 参考视频探测回执新增容器旋转信息；能力回执新增版本化 H3 参考安全策略。
+
 ## [0.2.0] - 2026-08-29
 
 ### Added

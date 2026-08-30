@@ -6,8 +6,8 @@
 import { ChangeEvent, DragEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent, SetStateAction, type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { imageProfileAcceptsReferenceCount, imageReferencePolicy, profileSupportsParameter, promptImageReferenceNumbers, type ProfileCapability, type UnavailableProfileCapability } from "./studio-capabilities";
 import { imageDimensions, type ImageAspectRatio, type ImageQuality } from "./studio-config";
-import { JOB_HISTORY_CACHE_KEY, currentOriginApiUrl, formatJobElapsed, formatJobTime, jobParameterRows, mergeJobHistory, mergeJobHistoryPage, parseJobHistoryCacheEnvelope, rebaseStudioJobMedia, serializeJobHistoryCache, serverJobToStudioJob, type GenerationParameters, type StudioJob as Job } from "./studio-history";
-import { createLibraryFolder, deleteDerivedMedia, deleteLibraryAsset, deleteLibraryFolder, deriveLibraryMedia, listDerivedMedia, listLibraryFolders, remoteAssetToLibraryItem, saveDerivedMedia, updateDerivedMedia, updateJobResult, updateLibraryAsset, type DerivedMedia, type LibraryAsset, type LibraryFolder, type MediaDeriveRequest, type MediaDeriveSource } from "./studio-library";
+import { JOB_HISTORY_CACHE_KEY, currentOriginApiUrl, formatJobElapsed, formatJobTime, jobParameterRows, mergeJobHistory, mergeJobHistoryPage, parseJobHistoryCacheEnvelope, rebaseStudioJobMedia, resumeGenerationJob, serializeJobHistoryCache, serverJobToStudioJob, type GenerationParameters, type StudioJob as Job } from "./studio-history";
+import { createLibraryFolder, deleteDerivedMedia, deleteLibraryAsset, deleteLibraryFolder, deriveLibraryMedia, estimateH3ReferenceCanvas, listDerivedMedia, listLibraryFolders, remoteAssetToLibraryItem, saveDerivedMedia, updateDerivedMedia, updateJobResult, updateLibraryAsset, type DerivedMedia, type LibraryAsset, type LibraryFolder, type MediaDeriveOptions, type MediaDeriveRequest, type MediaDeriveSource } from "./studio-library";
 import { H3_REFERENCE_PROMPT_TEMPLATE, hasPromptForOutput, promptForOutput, promptModePayload } from "./studio-prompt";
 import PromptMentionComposer, { type PromptMentionItem } from "./prompt-mentions";
 import {
@@ -40,7 +40,7 @@ type Asset = {
   media: MediaKind; fileName: string; localUrl: string; file?: File; remoteId?: string;
   derivationId?: string; sourceJobId?: string; thumbnailUrl?: string;
   uploadState: "uploading" | "ready" | "error"; role: AssetRole; restored?: boolean;
-  mediaMeta?: { duration?: number; has_audio?: boolean; fps?: number; reference_fps?: number; width?: number; height?: number };
+  mediaMeta?: { duration?: number; has_audio?: boolean; fps?: number; reference_fps?: number; width?: number; height?: number; rotation?: number };
   voiceSpeaker?: string; voiceSubject?: number;
 };
 type StudioNode = { id: string; kind: NodeKind; title: string; position: XY; asset?: Asset };
@@ -862,6 +862,32 @@ export default function Studio() {
     void loadJobHistory(true).catch(() => undefined);
   }, [loadJobHistory]);
 
+  const resumeResultJob = useCallback(async (source: Job, additionalSteps: number) => {
+    if (!source.id) throw new Error("任务 ID 不存在");
+    const receipt = await resumeGenerationJob(source.id, additionalSteps);
+    const resumedId = String(receipt.job_id);
+    setNotice(`已提交续跑：${source.resume?.current_steps ?? source.parameters?.steps ?? 0} + ${additionalSteps} 步`);
+    await loadJobHistory(true).catch(() => 0);
+    void (async () => {
+      for (;;) {
+        await new Promise((resolve) => window.setTimeout(resolve, 1500));
+        try {
+          const response = await fetch(`/api/status?id=${encodeURIComponent(resumedId)}`, { cache: "no-store" });
+          const body = await response.json() as Record<string, unknown> & { error?: { message?: string } };
+          if (!response.ok) throw new Error(body.error?.message ?? `续跑状态读取失败 (${response.status})`);
+          const resumed = serverJobToStudioJob(body);
+          if (resumed) setJobHistory((current) => mergeJobHistory(current, resumed));
+          if (body.status === "completed") { setNotice(`续跑完成：当前共 ${body.current_steps ?? "?"} 步`); break; }
+          if (body.status === "failed" || body.status === "canceled") { setNotice(String(body.message ?? "续跑失败")); break; }
+        } catch (error) {
+          setNotice(error instanceof Error ? error.message : "续跑状态读取失败");
+          break;
+        }
+      }
+      await loadJobHistory(true).catch(() => 0);
+    })();
+  }, [loadJobHistory]);
+
   const handleTimelineAssetCreated = useCallback((asset: LibraryAsset) => {
     setAssetLibrary((current) => [asset, ...current.filter((item) => item.id !== asset.id)]);
     setNotice(`已将分镜片段保存到资产：${asset.filename}`);
@@ -1284,7 +1310,7 @@ export default function Studio() {
     }
   }, [nodes]);
 
-  const deriveAssetNode = useCallback(async (nodeId: string, request: MediaDeriveRequest) => {
+  const deriveAssetNode = useCallback(async (nodeId: string, request: MediaDeriveRequest, options?: MediaDeriveOptions) => {
     const source = nodes.find((node) => node.id === nodeId)?.asset;
     const deriveSource: MediaDeriveSource | undefined = source?.remoteId
       ? { type: "asset", asset_id: source.remoteId }
@@ -1296,7 +1322,7 @@ export default function Studio() {
     if (!deriveSource) { setNotice("当前节点没有可剪辑的远程媒体来源。"); return; }
     setNotice("正在生成派生媒体…");
     try {
-      const derived: DerivedMedia = await deriveLibraryMedia(deriveSource, request);
+      const derived: DerivedMedia = await deriveLibraryMedia(deriveSource, request, options);
       if (!derived.contentUrl) throw new Error("派生媒体缺少预览地址");
       setDerivedResults((current) => [derived, ...current.filter((item) => item.id !== derived.id)]);
       addDerivedResultToCanvas(derived, nodeId);
@@ -2333,6 +2359,7 @@ export default function Studio() {
         onSave={saveResultToAssets}
         onDelete={deleteResult}
         onPin={pinJobResult}
+        onResume={resumeResultJob}
         onAddDerived={async (derived) => { addDerivedResultToCanvas(derived); }}
         onSaveDerived={saveDerivedResultToAssets}
         onDeleteDerived={deleteDerivedResult}
@@ -2519,7 +2546,7 @@ function PromptEditor({ inputId, prompt, setPrompt, mentionItems, onSelectMentio
   const hasNonEnglishBody = /[^\p{ASCII}]/u.test(prompt);
   return <div className="prompt-body embedded-prompt"><label htmlFor={inputId}>H3 视频 Prompt</label><PromptMentionComposer id={inputId} value={prompt} onChange={setPrompt} items={mentionItems} onSelectItem={onSelectMention} ariaLabel="H3 视频提示词" placeholder="粘贴完整 H3 提示词；输入 @ 选择素材"/><span className="embedded-char-count">{prompt.length} 字 · 输入 @ 引用本节点素材</span><div className="prompt-readonly-mode" role="note"><strong>只读提交</strong><span>只替换素材 ID 为 H3 标签，不改写 Prompt。</span></div>{hasNonEnglishBody && <p className="language-warning" role="alert">H3 官方模板建议视觉正文使用英文；系统不会翻译。</p>}<details className="prompt-helper"><summary>查看 H3 Ref2VA 参考模板（只读）</summary><pre aria-label="H3 Ref2VA 参考模板">{H3_REFERENCE_PROMPT_TEMPLATE}</pre></details></div>;
 }
-function AssetPreview({ nodeId, asset, connectedTarget, referenceIndex, onDerive, onSaveDerivation }: { nodeId: string; asset: Asset; connectedTarget?: string; referenceIndex?: number; onDerive: (nodeId: string, request: MediaDeriveRequest) => Promise<void>; onSaveDerivation: (nodeId: string) => Promise<void> }) {
+function AssetPreview({ nodeId, asset, connectedTarget, referenceIndex, onDerive, onSaveDerivation }: { nodeId: string; asset: Asset; connectedTarget?: string; referenceIndex?: number; onDerive: (nodeId: string, request: MediaDeriveRequest, options?: MediaDeriveOptions) => Promise<void>; onSaveDerivation: (nodeId: string) => Promise<void> }) {
   const [videoPreviewLoaded, setVideoPreviewLoaded] = useState(false);
   const [imagePreviewLoaded, setImagePreviewLoaded] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -2538,22 +2565,48 @@ function AssetPreview({ nodeId, asset, connectedTarget, referenceIndex, onDerive
   </div>;
 }
 
-function MediaTools({ nodeId, asset, onDerive, videoPreviewLoaded, getPlaybackTime }: { nodeId: string; asset: Asset; onDerive: (nodeId: string, request: MediaDeriveRequest) => Promise<void>; videoPreviewLoaded: boolean; getPlaybackTime: () => number | undefined }) {
+function MediaTools({ nodeId, asset, onDerive, videoPreviewLoaded, getPlaybackTime }: { nodeId: string; asset: Asset; onDerive: (nodeId: string, request: MediaDeriveRequest, options?: MediaDeriveOptions) => Promise<void>; videoPreviewLoaded: boolean; getPlaybackTime: () => number | undefined }) {
   const duration = Math.max(0, Number(asset.mediaMeta?.duration ?? 0));
   const [start, setStart] = useState(0);
   const [end, setEnd] = useState(duration || 1);
   const [time, setTime] = useState(0);
   const [running, setRunning] = useState(false);
+  const [runningOperation, setRunningOperation] = useState<MediaDeriveRequest["operation"]>();
+  const [processingProgress, setProcessingProgress] = useState(0);
+  const mediaAbortRef = useRef<AbortController | undefined>(undefined);
+  const [referenceAudio, setReferenceAudio] = useState<"keep" | "remove">("remove");
   const run = async (request: MediaDeriveRequest) => {
     if (running) return;
     setRunning(true);
-    try { await onDerive(nodeId, request); } finally { setRunning(false); }
+    setRunningOperation(request.operation);
+    setProcessingProgress(0);
+    const controller = request.operation === "prepare_h3_reference" ? new AbortController() : undefined;
+    mediaAbortRef.current = controller;
+    try {
+      await onDerive(nodeId, request, {
+        signal: controller?.signal,
+        onProgress: (progress) => setProcessingProgress(progress),
+      });
+    } finally {
+      mediaAbortRef.current = undefined;
+      setRunning(false);
+      setRunningOperation(undefined);
+    }
   };
+  useEffect(() => () => mediaAbortRef.current?.abort(), []);
   const capturePlaybackFrame = async () => {
     const current = getPlaybackTime();
     if (typeof current !== "number" || !Number.isFinite(current)) return;
     setTime(current);
     await run({ operation: "frame", time: current });
+  };
+  const prepareReference = async () => {
+    const planned = estimateH3ReferenceCanvas(Number(asset.mediaMeta?.width), Number(asset.mediaMeta?.height), Number(asset.mediaMeta?.rotation ?? 0));
+    const original = asset.mediaMeta?.width && asset.mediaMeta?.height ? `${asset.mediaMeta.width}×${asset.mediaMeta.height}` : "尺寸未知";
+    const expected = planned ? `${planned.width}×${planned.height}` : "由服务端探测";
+    const durationText = asset.mediaMeta?.duration ? `${asset.mediaMeta.duration.toFixed(2)} 秒` : "时长未知";
+    if (!window.confirm(`优化为 H3 视频参考？\n\n原始：${original} / ${durationText} / ${asset.mediaMeta?.fps ?? asset.mediaMeta?.reference_fps ?? "?"} FPS\n预计：${expected} / 最长 15.00 秒 / 24 FPS / ${referenceAudio === "keep" ? "保留音频" : "移除音频"}\n\n原始素材不会被修改。`)) return;
+    await run({ operation: "prepare_h3_reference", preset: "h3-low-token", audio: referenceAudio });
   };
   return <details className="media-tools" data-no-drag>
     <summary>剪辑与派生</summary>
@@ -2564,8 +2617,9 @@ function MediaTools({ nodeId, asset, onDerive, videoPreviewLoaded, getPlaybackTi
       <button type="button" disabled={running || !videoPreviewLoaded} onClick={() => void capturePlaybackFrame()}>获取播放器当前帧</button>
       <label className="media-current-frame"><span>指定时间（高级）</span><input type="number" min="0" max={duration || undefined} step="0.01" value={time} onChange={(event) => setTime(Number(event.target.value))}/><button type="button" disabled={running} onClick={() => void run({ operation: "frame", time })}>按时间获取</button></label>
       <div className="media-tool-grid"><button type="button" disabled={running || asset.mediaMeta?.has_audio === false} onClick={() => void run({ operation: "extract_audio" })}>分离音频</button><button type="button" disabled={running || asset.mediaMeta?.has_audio === false} onClick={() => void run({ operation: "remove_audio" })}>移除音轨</button></div>
+      <div className="h3-reference-prepare"><label><span>H3 参考音频</span><select value={referenceAudio} disabled={running || asset.mediaMeta?.has_audio === false} onChange={(event) => setReferenceAudio(event.target.value as "keep" | "remove")}><option value="remove">移除</option><option value="keep" disabled={asset.mediaMeta?.has_audio === false}>保留</option></select></label><button type="button" disabled={running} onClick={() => void prepareReference()}>优化为 H3 视频参考</button>{runningOperation === "prepare_h3_reference" && <><progress max="100" value={processingProgress}/><button type="button" className="cancel-media-task" onClick={() => mediaAbortRef.current?.abort()}>取消处理</button></>}<small>降低 sm120 + SageAttention 长序列灰屏风险；生成独立派生，不修改原素材。</small></div>
     </> : <button type="button" disabled={running || end <= start} onClick={() => void run({ operation: "audio_trim", start, end })}>裁剪音频</button>}
-    <small>{running ? "处理中…" : "产物会作为新节点加入画布，由你决定是否保存到资产。"}</small>
+    <small>{running ? `处理中… ${processingProgress > 0 ? `${processingProgress}%` : ""}` : "产物会作为新节点加入画布，由你决定是否保存到资产。"}</small>
   </details>;
 }
 function ResultVideo({ job }: { job: Job }) {
@@ -2832,11 +2886,13 @@ function ResultThumbnail({ job }: { job: Job }) {
     setCoolingDown(true);
   }}/>{job.media === "video" && <span className="library-video-overlay" aria-hidden="true">▶</span>}</>;
 }
-function ResultLibrary({ jobs, derivedResults, state, verified, error, pageError, savedResultAssets, currentId, hasMore, onRetry, onLoadMore, onPin, onPinDerived, onSelect, onAdd, onSave, onDelete, onAddDerived, onSaveDerived, onDeleteDerived, onClose }: { jobs: Job[]; derivedResults: DerivedMedia[]; state: "loading" | "refreshing" | "ready" | "error"; verified: boolean; error: string; pageError: string; savedResultAssets: Record<string, string>; currentId?: string; hasMore: boolean; onRetry: () => Promise<number>; onLoadMore: () => Promise<number>; onSelect: (job: Job) => void; onAdd: (job: Job) => Promise<void>; onSave: (job: Job) => Promise<LibraryAsset | undefined>; onDelete: (job: Job) => Promise<void>; onPin: (job: Job, pinned: boolean) => Promise<void>; onAddDerived: (derived: DerivedMedia) => Promise<void>; onSaveDerived: (derived: DerivedMedia) => Promise<LibraryAsset | undefined>; onDeleteDerived: (derived: DerivedMedia) => Promise<void>; onPinDerived: (derived: DerivedMedia, pinned: boolean) => Promise<void>; onClose: () => void }) {
+function ResultLibrary({ jobs, derivedResults, state, verified, error, pageError, savedResultAssets, currentId, hasMore, onRetry, onLoadMore, onPin, onResume, onPinDerived, onSelect, onAdd, onSave, onDelete, onAddDerived, onSaveDerived, onDeleteDerived, onClose }: { jobs: Job[]; derivedResults: DerivedMedia[]; state: "loading" | "refreshing" | "ready" | "error"; verified: boolean; error: string; pageError: string; savedResultAssets: Record<string, string>; currentId?: string; hasMore: boolean; onRetry: () => Promise<number>; onLoadMore: () => Promise<number>; onSelect: (job: Job) => void; onAdd: (job: Job) => Promise<void>; onSave: (job: Job) => Promise<LibraryAsset | undefined>; onDelete: (job: Job) => Promise<void>; onPin: (job: Job, pinned: boolean) => Promise<void>; onResume: (job: Job, additionalSteps: number) => Promise<void>; onAddDerived: (derived: DerivedMedia) => Promise<void>; onSaveDerived: (derived: DerivedMedia) => Promise<LibraryAsset | undefined>; onDeleteDerived: (derived: DerivedMedia) => Promise<void>; onPinDerived: (derived: DerivedMedia, pinned: boolean) => Promise<void>; onClose: () => void }) {
   const [visibleCount, setVisibleCount] = useState(RESULT_PAGE_SIZE);
   const [addingId, setAddingId] = useState<string>();
   const [savingId, setSavingId] = useState<string>();
   const [pinningId, setPinningId] = useState<string>();
+  const [resumingId, setResumingId] = useState<string>();
+  const [resumeSteps, setResumeSteps] = useState<Record<string, number>>({});
   const [deletingId, setDeletingId] = useState<string>();
   const [loadingMore, setLoadingMore] = useState(false);
   const [localPageError, setLocalPageError] = useState("");
@@ -2940,6 +2996,7 @@ function ResultLibrary({ jobs, derivedResults, state, verified, error, pageError
       {selecting && item.id && <label className="result-library-select"><input type="checkbox" checked={effectiveSelectedIds.has(resultKey("job", item.id))} onChange={() => toggleSelection(resultKey("job", item.id!))} aria-label={`选择任务结果 ${item.id}`}/><span>选择</span></label>}
       <button type="button" className="result-library-preview" onClick={() => onSelect(item)} aria-label={`在画布预览任务 ${item.id}`}><ResultThumbnail job={item} key={`${item.id}:${item.thumbnailUrl ?? ""}`}/><span className="result-library-preview-label">在画布预览</span></button>
       <div className="result-library-meta"><strong>{item.pinned ? "★ " : ""}{item.parameters?.width && item.parameters?.height ? `${item.parameters.width}×${item.parameters.height}` : item.media === "image" ? "图片" : "视频"}</strong><small>{formatJobTime(item.createdAt)} · {formatJobElapsed(item.createdAt, item.updatedAt)}</small></div>
+      {item.resume?.supported && (() => { const maximumAdditional = Math.max(0, item.resume.max_total_steps - item.resume.current_steps); const additional = Math.min(Math.max(1, resumeSteps[item.id!] ?? 1), Math.max(1, maximumAdditional)); const reason = item.resume.reason === "chain_busy" ? "同一任务链正在续跑" : item.resume.reason === "checkpoint_expired" ? "续跑点已过期" : item.resume.reason === "checkpoint_corrupt" ? "续跑点已损坏" : item.resume.reason === "checkpoint_state_mismatch" ? "任务与续跑点状态不一致" : item.resume.reason === "checkpoint_missing" ? "续跑点不存在" : item.resume.reason === "max_steps_reached" ? "已达到最大总步数" : item.resume.reason === "checkpoint_pending" ? "正在保存续跑点" : "续跑点暂不可用"; return <div className="result-resume-panel"><span>当前总步数：{item.resume.current_steps} / {item.resume.max_total_steps}</span>{item.resume.checkpoint_expires_at && <small>续跑点有效至：{new Date(item.resume.checkpoint_expires_at * 1000).toLocaleString("zh-CN")}</small>}<label><span>追加步数</span><input type="number" min="1" max={Math.max(1, maximumAdditional)} value={additional} onChange={(event) => setResumeSteps((current) => ({ ...current, [item.id!]: Math.min(Math.max(1, Math.floor(Number(event.target.value) || 1)), Math.max(1, maximumAdditional)) }))}/></label><small>续跑后总步数：{item.resume.current_steps + additional}</small><button type="button" disabled={!item.resume.can_resume || maximumAdditional < 1 || Boolean(resumingId)} onClick={() => { setResumingId(item.id); void onResume(item, additional).catch(() => undefined).finally(() => setResumingId(undefined)); }}>{resumingId === item.id ? "提交中…" : "继续生成"}</button>{!item.resume.can_resume && <small>{reason}</small>}</div>; })()}
       <div className="result-library-actions">
         <button type="button" title="添加到画布" disabled={Boolean(addingId || savingId || deletingId)} onClick={() => void addToCanvas(item)} aria-label={`将任务 ${item.id} 的${item.media === "image" ? "图片" : "视频"}添加到画布`}>{addingId === item.id ? "添加中…" : "＋ 添加到画布"}</button>
         <button type="button" title="保存到资产" className="result-save-asset" disabled={Boolean(addingId || savingId || deletingId || savedResultAssets[item.id!])} onClick={() => void saveToAssets(item)} aria-label={`将任务 ${item.id} 的${item.media === "image" ? "图片" : "视频"}保存到资产`}>{savedResultAssets[item.id!] ? "✓ 已保存到资产" : savingId === item.id ? "保存中…" : "保存到资产"}</button>

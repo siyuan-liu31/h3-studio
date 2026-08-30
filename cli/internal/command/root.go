@@ -18,7 +18,7 @@ import (
 	"h3studio/cli/internal/output"
 )
 
-const Version = "0.2.0"
+const Version = "0.3.0"
 
 type IOStreams struct {
 	In       io.Reader
@@ -146,8 +146,8 @@ var networkCommandActions = map[string]map[string]bool{
 	"profile":    {"list": true, "show": true},
 	"asset":      {"upload": true, "download": true, "list": true, "get": true, "copy": true, "update": true, "pin": true, "delete": true},
 	"generate":   {"image": true, "video": true},
-	"job":        {"list": true, "get": true, "wait": true, "cancel": true, "download": true, "save": true, "workflow": true, "delete": true},
-	"media":      {"frame": true, "endpoints": true, "trim": true, "extract-audio": true, "remove-audio": true, "list": true, "get": true, "download": true, "save": true, "delete": true},
+	"job":        {"list": true, "get": true, "wait": true, "resume": true, "cancel": true, "download": true, "save": true, "workflow": true, "delete": true},
+	"media":      {"frame": true, "endpoints": true, "trim": true, "extract-audio": true, "remove-audio": true, "prepare-reference": true, "list": true, "get": true, "download": true, "save": true, "delete": true},
 	"project":    {"list": true, "create": true, "apply": true, "get": true, "delete": true, "run": true, "wait": true, "stop": true, "rerun": true, "merge": true, "download": true},
 }
 
@@ -365,6 +365,8 @@ func commandFlagNeedsValue(top, sub, arg string) bool {
 		"ref": true, "ref-dir": true, "kind": true, "include": true, "query": true, "folder": true,
 		"to": true, "name": true, "to-context": true, "limit": true, "cursor": true, "timeout": true,
 		"index": true, "position": true, "at": true, "start": true, "end": true, "segment": true, "input": true,
+		"additional-steps": true, "max-short-edge": true, "max-long-edge": true, "max-duration": true,
+		"audio": true, "fit": true, "alignment": true, "pad-mode": true, "fps": true, "preset": true,
 		"ssh-target": true, "ssh-port": true, "remote-api-port": true,
 	}
 	if name == "server" {

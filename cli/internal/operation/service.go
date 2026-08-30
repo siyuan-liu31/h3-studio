@@ -180,6 +180,36 @@ func (s *Service) Generate(ctx context.Context, payload map[string]any) (map[str
 	return nil, &contract.CLIError{Code: "submission_recovery_failed", Message: "generation submission could not be recovered safely", Retryable: true, Details: details, Cause: last}
 }
 
+func (s *Service) Resume(ctx context.Context, jobID string, additionalSteps int, requestID string) (map[string]any, error) {
+	if !resource.ValidServerID(jobID) {
+		return nil, contract.NewError("invalid_argument", "job_id must be 32 lowercase hex characters")
+	}
+	if additionalSteps <= 0 {
+		return nil, contract.NewError("invalid_argument", "additional_steps must be positive")
+	}
+	if requestID == "" {
+		raw := make([]byte, 16)
+		if _, err := rand.Read(raw); err != nil {
+			return nil, &contract.CLIError{Code: "request_id_failed", Message: "could not create resume request_id", Cause: err}
+		}
+		requestID = hex.EncodeToString(raw)
+	}
+	body := map[string]any{"additional_steps": additionalSteps, "request_id": requestID}
+	value := map[string]any{}
+	status, err := s.API.JSONStatus(ctx, http.MethodPost, "/api/jobs/"+url.PathEscape(jobID)+"/resume", body, &value)
+	if err != nil {
+		return nil, err
+	}
+	if status != http.StatusAccepted {
+		return nil, invalidIDResponse(fmt.Sprintf("resume submission returned HTTP %d instead of 202", status))
+	}
+	if _, err := RequireResponseID(value, "job_id"); err != nil {
+		return nil, err
+	}
+	value["request_id"] = requestID
+	return value, nil
+}
+
 func withRequestID(err error, requestID string, attempts int) error {
 	details := map[string]any{"request_id": requestID, "attempts": attempts}
 	var typed *contract.CLIError
@@ -540,6 +570,10 @@ func (s *Service) Wait(ctx context.Context, jobID string, options WaitOptions) (
 }
 
 func (s *Service) Derive(ctx context.Context, source string, body map[string]any) (map[string]any, error) {
+	return s.DeriveWithEvents(ctx, source, body, nil)
+}
+
+func (s *Service) DeriveWithEvents(ctx context.Context, source string, body map[string]any, onEvent func(map[string]any)) (map[string]any, error) {
 	locator, err := resource.Parse(source)
 	if err != nil {
 		return nil, &contract.CLIError{Code: "invalid_locator", Message: err.Error(), Cause: err}
@@ -556,13 +590,98 @@ func (s *Service) Derive(ctx context.Context, source string, body map[string]any
 	}
 	body["source"] = locator.DeriveSource()
 	value := map[string]any{}
-	if err := s.API.JSONMedia(ctx, http.MethodPost, "/api/media/derive", body, &value); err != nil {
+	if stringValue(body["operation"], "") != "prepare_h3_reference" {
+		if err := s.API.JSONMedia(ctx, http.MethodPost, "/api/media/derive", body, &value); err != nil {
+			return nil, err
+		}
+		if _, err := RequireResponseID(value, "receipt_id", "id"); err != nil {
+			return nil, err
+		}
+		return value, nil
+	}
+	body["background"] = true
+	status, err := s.API.JSONStatus(ctx, http.MethodPost, "/api/media/derive", body, &value)
+	if err != nil {
 		return nil, err
 	}
-	if _, err := RequireResponseID(value, "receipt_id", "id"); err != nil {
+	if status == http.StatusOK || status == http.StatusCreated {
+		if _, err := RequireResponseID(value, "receipt_id", "id"); err != nil {
+			return nil, err
+		}
+		return value, nil
+	}
+	if status != http.StatusAccepted {
+		return nil, invalidIDResponse(fmt.Sprintf("reference preprocessing returned HTTP %d instead of 202", status))
+	}
+	taskID, err := RequireResponseID(value, "task_id", "id")
+	if err != nil {
 		return nil, err
 	}
-	return value, nil
+	if onEvent != nil {
+		onEvent(map[string]any{"type": "media_submitted", "task_id": taskID, "status": value["status"], "progress": value["progress"]})
+	}
+	cancelRemote := func() error {
+		cancelCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		return s.API.JSON(cancelCtx, http.MethodPost, "/api/media-tasks/"+url.PathEscape(taskID)+"/cancel", map[string]any{}, nil)
+	}
+	cancelledError := func(cause error) error {
+		cancelErr := cancelRemote()
+		details := map[string]any{"task_id": taskID}
+		if cancelErr != nil {
+			details["cancel_error"] = cancelErr.Error()
+		}
+		return &contract.CLIError{Code: "cancelled", Message: "reference preprocessing was cancelled", Details: details, Cause: cause}
+	}
+	interval := s.PollInterval
+	if interval <= 0 || interval > time.Second {
+		interval = time.Second
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, cancelledError(ctx.Err())
+		default:
+		}
+		task, err := s.API.Get(ctx, "/api/media-tasks/"+url.PathEscape(taskID))
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil, cancelledError(ctx.Err())
+			}
+			return nil, err
+		}
+		state := stringValue(task["status"], "")
+		if onEvent != nil {
+			onEvent(map[string]any{"type": "media_progress", "task_id": taskID, "status": state, "progress": task["progress"]})
+		}
+		switch state {
+		case "completed":
+			receipt, ok := task["receipt"].(map[string]any)
+			if !ok {
+				return nil, invalidIDResponse("completed media task did not contain a receipt")
+			}
+			if _, err := RequireResponseID(receipt, "receipt_id", "id"); err != nil {
+				return nil, err
+			}
+			receipt["media_task_id"] = taskID
+			return receipt, nil
+		case "failed", "canceled", "cancelled":
+			failure, _ := task["error"].(map[string]any)
+			code := stringValue(failure["code"], "media_processing_failed")
+			message := stringValue(failure["message"], "reference preprocessing failed")
+			return nil, &contract.CLIError{Code: code, Message: message, Retryable: boolValue(failure["retryable"]), Details: map[string]any{"task_id": taskID, "task": task}}
+		case "queued", "running", "cancelling":
+		default:
+			return nil, &contract.CLIError{Code: "invalid_response", Message: "server returned unknown media task status", Details: task}
+		}
+		timer := time.NewTimer(interval)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			continue
+		case <-timer.C:
+		}
+	}
 }
 
 // RequireResponseID validates creation/materialization receipts before their

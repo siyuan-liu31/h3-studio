@@ -6,17 +6,27 @@ import hashlib
 import math
 import mimetypes
 import os
+import queue
+import signal
 import shutil
 import subprocess
 import threading
 import time
 import uuid
+from collections import deque
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable
 
 from .config import Config
 from .errors import ApiError
+from .h3_reference import (
+    ALGORITHM_VERSION,
+    ReferenceParameters,
+    calculate_reference_plan,
+    estimate_video_tokens,
+    idempotency_key,
+)
 from .security import safe_filename, secure_join, validate_id
 from .storage import AssetStore, JsonStore
 
@@ -169,6 +179,9 @@ class MediaService:
     def _run(command: list[str], destination: Path, *, timeout: int = 600) -> None:
         try:
             completed = subprocess.run(command, capture_output=True, text=True, timeout=timeout, check=False)
+        except FileNotFoundError as error:
+            destination.unlink(missing_ok=True)
+            raise ApiError(503, "ffmpeg_unavailable", "ffmpeg is unavailable on the H3 Studio server") from error
         except (OSError, subprocess.TimeoutExpired) as error:
             destination.unlink(missing_ok=True)
             raise ApiError(422, "media_processing_failed", "ffmpeg could not process the media") from error
@@ -231,13 +244,27 @@ class MediaService:
             self._slots.release()
         return destination
 
-    def derive(self, source: Path, source_meta: dict[str, Any], data: dict[str, Any]) -> dict[str, Any]:
+    def derive(
+        self,
+        source: Path,
+        source_meta: dict[str, Any],
+        data: dict[str, Any],
+        *,
+        progress: Callable[[int], None] | None = None,
+        cancel_event: threading.Event | None = None,
+    ) -> dict[str, Any]:
         operation = data.get("operation")
-        allowed = {"video_trim", "frame", "audio_trim", "extract_audio", "remove_audio"}
+        allowed = {"video_trim", "frame", "audio_trim", "extract_audio", "remove_audio", "prepare_h3_reference"}
         if operation not in allowed:
             raise ApiError(400, "invalid_operation", f"operation must be one of {', '.join(sorted(allowed))}")
         kind = str(source_meta.get("kind", ""))
         media = source_meta.get("media", {}) if isinstance(source_meta.get("media"), dict) else {}
+        if operation == "prepare_h3_reference":
+            if kind != "video":
+                raise ApiError(400, "media_kind_mismatch", "prepare_h3_reference requires video input")
+            return self._prepare_h3_reference(
+                source, source_meta, data, progress=progress, cancel_event=cancel_event,
+            )
         duration = float(media.get("duration", 0) or 0)
         raw_video_duration = media.get("video_duration")
         if not raw_video_duration:
@@ -356,6 +383,293 @@ class MediaService:
             staging.unlink(missing_ok=True)
             self._slots.release()
 
+    def _prepare_h3_reference(
+        self,
+        source: Path,
+        source_meta: dict[str, Any],
+        data: dict[str, Any],
+        *,
+        progress: Callable[[int], None] | None = None,
+        cancel_event: threading.Event | None = None,
+    ) -> dict[str, Any]:
+        parameters = ReferenceParameters.parse(data)
+        media = source_meta.get("media") if isinstance(source_meta.get("media"), dict) else {}
+        if not media.get("width") or not media.get("height") or not media.get("duration"):
+            try:
+                media = AssetStore._probe_media(source, "video")
+            except ApiError as error:
+                raise ApiError(error.status, "media_probe_failed", "source video could not be inspected") from error
+        if float(media.get("duration", 0) or 0) <= 0:
+            raise ApiError(422, "invalid_duration", "source video must have a positive duration")
+        plan = calculate_reference_plan(
+            media.get("width"), media.get("height"), media.get("rotation", 0), parameters,
+        )
+        source_sha256 = str(source_meta.get("sha256") or "")
+        if len(source_sha256) != 64:
+            source_sha256 = AssetStore.hash_file(source)
+        reuse_key = idempotency_key(source_sha256, parameters)
+        with self._lock:
+            reusable = next(
+                (
+                    receipt for receipt in self.metadata.list()
+                    if receipt.get("operation") == "prepare_h3_reference"
+                    and receipt.get("idempotency_key") == reuse_key
+                ),
+                None,
+            )
+            if reusable is not None:
+                try:
+                    reusable_path = self.path(reusable)
+                except ApiError:
+                    reusable_path = None
+                expected_size = int(reusable.get("size", -1) or -1)
+                expected_sha256 = reusable.get("sha256")
+                if (
+                    reusable_path is not None and reusable_path.is_file()
+                    and reusable_path.stat().st_size == expected_size
+                    and isinstance(expected_sha256, str)
+                    and AssetStore.hash_file(reusable_path) == expected_sha256
+                ):
+                    public = self.public(reusable)
+                    public["reused"] = True
+                    return public
+
+        receipt_id = uuid.uuid4().hex
+        destination = secure_join(self.root, receipt_id + ".mp4")
+        staging = destination.with_name(f"{receipt_id}.tmp-{uuid.uuid4().hex}.mp4")
+        pads = (plan.pad_left, plan.pad_right, plan.pad_top, plan.pad_bottom)
+        filters = [
+            f"scale={plan.content_width}:{plan.content_height}:flags=lanczos",
+            "setsar=1",
+            f"pad={plan.canvas_width}:{plan.canvas_height}:{plan.pad_left}:{plan.pad_top}:color=black",
+        ]
+        if any(pads):
+            filters.append(
+                "fillborders="
+                f"left={plan.pad_left}:right={plan.pad_right}:top={plan.pad_top}:bottom={plan.pad_bottom}:mode=smear"
+            )
+        filters.append(f"fps={parameters.fps}")
+        requested_duration = min(float(media.get("duration", 0) or 0), parameters.max_duration)
+        command = [
+            "ffmpeg", "-nostdin", "-y", "-v", "error", "-progress", "pipe:1", "-nostats", "-i", str(source),
+            "-t", f"{requested_duration:.6f}", "-map", "0:v:0",
+        ]
+        if parameters.audio == "keep":
+            command += ["-map", "0:a?", "-c:a", "aac", "-b:a", "192k"]
+        else:
+            command += ["-an"]
+        command += [
+            "-vf", ",".join(filters), "-c:v", "libx264", "-preset", "veryfast",
+            "-crf", "18", "-pix_fmt", "yuv420p", "-metadata:s:v:0", "rotate=0",
+            "-movflags", "+faststart", "-fs", str(self.config.max_video_bytes + 1), str(staging),
+        ]
+        if not self._slots.acquire(blocking=False):
+            raise ApiError(429, "media_busy", "two media operations are already running")
+        try:
+            with self._reserve_output(self.config.max_video_bytes):
+                self._run_reference(
+                    command, staging, requested_duration,
+                    progress=progress, cancel_event=cancel_event,
+                )
+                probe = AssetStore._probe_media(staging, "video")
+                if int(probe.get("width", 0) or 0) != plan.canvas_width or int(probe.get("height", 0) or 0) != plan.canvas_height:
+                    raise ApiError(422, "media_processing_failed", "prepared reference dimensions failed verification")
+                if float(probe.get("duration", 0) or 0) > parameters.max_duration + 0.05:
+                    raise ApiError(422, "media_processing_failed", "prepared reference duration failed verification")
+                if abs(float(probe.get("fps", 0) or 0) - parameters.fps) > 0.01:
+                    raise ApiError(422, "media_processing_failed", "prepared reference frame rate failed verification")
+                if probe.get("video_codec") != "h264" or probe.get("pixel_format") != "yuv420p":
+                    raise ApiError(422, "media_processing_failed", "prepared reference codec failed verification")
+                if parameters.audio == "remove" and probe.get("has_audio"):
+                    raise ApiError(422, "media_processing_failed", "prepared reference unexpectedly contains audio")
+                size = staging.stat().st_size
+                if size > self.config.max_video_bytes:
+                    raise ApiError(413, "derived_too_large", "prepared reference exceeds the configured video size limit")
+                derived_sha256 = AssetStore.hash_file(staging)
+                os.replace(staging, destination)
+                output_frames = int(probe.get("frame_count", 0) or 0)
+                if output_frames <= 0:
+                    output_frames = max(1, int(round(float(probe.get("duration", 0) or 0) * parameters.fps)))
+                source_frames = int(media.get("frame_count", 0) or 0)
+                source_receipt = source_meta.get("source_receipt", {})
+                value = {
+                    "id": receipt_id,
+                    "kind": "video",
+                    "display_name": safe_filename(str(data.get("display_name") or f"{source.stem}-h3-reference.mp4")),
+                    "filename": safe_filename(str(data.get("display_name") or f"{source.stem}-h3-reference.mp4")),
+                    "stored_name": destination.name,
+                    "mime_type": "video/mp4",
+                    "size": size,
+                    "sha256": derived_sha256,
+                    "media": probe,
+                    "created_at": time.time(),
+                    "source": source_receipt,
+                    "operation": "prepare_h3_reference",
+                    "parameters": parameters.public(),
+                    "algorithm_version": ALGORITHM_VERSION,
+                    "idempotency_key": reuse_key,
+                    "preprocessing": {
+                        "algorithm_version": ALGORITHM_VERSION,
+                        "source": {
+                            **(source_receipt if isinstance(source_receipt, dict) else {}),
+                            "sha256": source_sha256,
+                            "display_name": str(source_meta.get("display_name") or source_meta.get("filename") or source.name),
+                            "width": int(media.get("width", 0) or 0),
+                            "height": int(media.get("height", 0) or 0),
+                            "rotation": int(media.get("rotation", 0) or 0),
+                            "fps": float(media.get("fps", 0) or 0),
+                            "frame_count": source_frames,
+                            "duration": float(media.get("duration", 0) or 0),
+                            "has_audio": media.get("has_audio") is True,
+                        },
+                        "plan": plan.public(),
+                        "output": {
+                            "content_width": plan.content_width,
+                            "content_height": plan.content_height,
+                            "canvas_width": plan.canvas_width,
+                            "canvas_height": plan.canvas_height,
+                            "fps": float(probe.get("fps", 0) or 0),
+                            "frame_count": output_frames,
+                            "duration": float(probe.get("duration", 0) or 0),
+                            "has_audio": probe.get("has_audio") is True,
+                            "truncated": float(media.get("duration", 0) or 0) > parameters.max_duration,
+                            "trim_start": 0.0,
+                            "trim_end": float(probe.get("duration", 0) or 0),
+                        },
+                        "token_estimate": {
+                            "reference_video_tokens": estimate_video_tokens(plan.canvas_width, plan.canvas_height, output_frames),
+                        },
+                    },
+                }
+                with self._mutation_lock, self._lock:
+                    if self._stored_bytes() + size > self.config.max_asset_storage_bytes:
+                        raise ApiError(507, "media_quota", "derived media storage quota would be exceeded")
+                    self.metadata.put(receipt_id, value)
+                public = self.public(value)
+                public["reused"] = False
+                return public
+        except ApiError as error:
+            destination.unlink(missing_ok=True)
+            if error.code in {"media_quota", "disk_full"}:
+                raise ApiError(507, "insufficient_storage", "insufficient storage for prepared reference") from error
+            raise
+        except OSError as error:
+            destination.unlink(missing_ok=True)
+            if getattr(error, "errno", None) == 28:
+                raise ApiError(507, "insufficient_storage", "insufficient storage for prepared reference") from error
+            raise
+        except Exception:
+            destination.unlink(missing_ok=True)
+            try:
+                self.metadata.delete(receipt_id)
+            except ApiError:
+                pass
+            raise
+        finally:
+            staging.unlink(missing_ok=True)
+            self._slots.release()
+
+    @staticmethod
+    def _run_reference(
+        command: list[str],
+        destination: Path,
+        duration: float,
+        *,
+        progress: Callable[[int], None] | None,
+        cancel_event: threading.Event | None,
+    ) -> None:
+        """Run ffmpeg with cooperative cancellation and bounded progress events."""
+        try:
+            process = subprocess.Popen(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                start_new_session=True,
+            )
+        except OSError as error:
+            raise ApiError(503, "ffmpeg_unavailable", "ffmpeg is unavailable") from error
+
+        lines: queue.Queue[str | None] = queue.Queue()
+        stderr_lines: deque[str] = deque(maxlen=20)
+
+        def read_progress() -> None:
+            assert process.stdout is not None
+            for line in process.stdout:
+                lines.put(line.rstrip("\r\n"))
+            lines.put(None)
+
+        reader = threading.Thread(target=read_progress, name="h3-reference-progress", daemon=True)
+        def read_errors() -> None:
+            assert process.stderr is not None
+            for line in process.stderr:
+                stderr_lines.append(line.rstrip("\r\n"))
+
+        error_reader = threading.Thread(target=read_errors, name="h3-reference-errors", daemon=True)
+        reader.start()
+        error_reader.start()
+        started = time.monotonic()
+        last_progress = -1
+
+        def stop_process() -> None:
+            if process.poll() is not None:
+                return
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+            except (OSError, AttributeError):
+                process.terminate()
+            try:
+                process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except (OSError, AttributeError):
+                    process.kill()
+
+        try:
+            if progress is not None:
+                progress(1)
+            while process.poll() is None:
+                if cancel_event is not None and cancel_event.is_set():
+                    stop_process()
+                    raise ApiError(409, "cancelled", "reference preprocessing was cancelled")
+                if time.monotonic() - started > 300:
+                    stop_process()
+                    raise ApiError(422, "media_processing_failed", "ffmpeg timed out while preparing the reference")
+                try:
+                    line = lines.get(timeout=0.1)
+                except queue.Empty:
+                    continue
+                if line and line.startswith(("out_time_us=", "out_time_ms=")):
+                    try:
+                        processed = int(line.split("=", 1)[1]) / 1_000_000
+                    except (TypeError, ValueError):
+                        continue
+                    current = max(1, min(99, int(processed / max(duration, 0.001) * 100)))
+                    if current > last_progress:
+                        last_progress = current
+                        if progress is not None:
+                            progress(current)
+            reader.join(timeout=1)
+            error_reader.join(timeout=1)
+            if cancel_event is not None and cancel_event.is_set():
+                raise ApiError(409, "cancelled", "reference preprocessing was cancelled")
+            if process.returncode or not destination.is_file() or destination.stat().st_size == 0:
+                destination.unlink(missing_ok=True)
+                message = stderr_lines[-1][:300] if stderr_lines else "ffmpeg failed"
+                raise ApiError(422, "media_processing_failed", message)
+            if progress is not None:
+                progress(99)
+        finally:
+            if process.poll() is None:
+                stop_process()
+            reader.join(timeout=1)
+            error_reader.join(timeout=1)
+            if process.stdout is not None:
+                process.stdout.close()
+            if process.stderr is not None:
+                process.stderr.close()
+
     @staticmethod
     def public(value: dict[str, Any]) -> dict[str, Any]:
         receipt_id = str(value["id"])
@@ -366,6 +680,8 @@ class MediaService:
             "media": value.get("media", {}), "created_at": value["created_at"],
             "source": value.get("source", {}), "operation": value.get("operation"),
             "parameters": value.get("parameters", {}),
+            **({"preprocessing": value["preprocessing"]} if isinstance(value.get("preprocessing"), dict) else {}),
+            **({"algorithm_version": value["algorithm_version"]} if isinstance(value.get("algorithm_version"), str) else {}),
             "pinned": value.get("pinned") is True,
             "content_url": f"/api/derivations/{receipt_id}/content",
             "preview_url": f"/api/derivations/{receipt_id}/content",

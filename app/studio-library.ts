@@ -9,6 +9,7 @@ export type LibraryMedia = {
   normalized_to_24fps?: boolean;
   width?: number;
   height?: number;
+  rotation?: number;
 };
 export type LibraryAsset = {
   id: string;
@@ -36,6 +37,7 @@ export type DerivedMedia = {
   assetId?: string;
   pinned: boolean;
   media: LibraryMedia;
+  preprocessing?: Record<string, unknown>;
 };
 export type LibraryFolder = { id: string; name: string; parentId?: string };
 export type MediaDeriveRequest =
@@ -44,11 +46,17 @@ export type MediaDeriveRequest =
   | { operation: "frame"; time: number }
   | { operation: "extract_audio" }
   | { operation: "remove_audio" }
+  | { operation: "prepare_h3_reference"; preset?: "h3-low-token"; max_short_edge?: number; max_long_edge?: number; fps?: 24; max_duration?: number; audio: "keep" | "remove"; fit?: "contain"; alignment?: 32; pad_mode?: "edge" }
   | { operation: "audio_trim"; start: number; end: number };
 export type MediaDeriveSource =
   | { type: "asset"; asset_id: string }
   | { type: "job"; job_id: string; index?: number }
   | { type: "derivation"; receipt_id: string };
+export type MediaDeriveOptions = {
+  signal?: AbortSignal;
+  onProgress?: (progress: number, status: string) => void;
+  pollIntervalMs?: number;
+};
 
 const ASSET_ID = /^[0-9a-f]{32}$/;
 const MEDIA_KINDS = new Set<LibraryMediaKind>(["image", "video", "audio"]);
@@ -68,7 +76,7 @@ export function remoteAssetToLibraryItem(receipt: unknown): LibraryAsset | undef
   if (typeof id !== "string" || !ASSET_ID.test(id) || typeof kind !== "string" || !MEDIA_KINDS.has(kind as LibraryMediaKind)) return undefined;
   const rawMedia = value.media && typeof value.media === "object" ? value.media as Record<string, unknown> : {};
   const media: LibraryMedia = {};
-  for (const key of ["duration", "fps", "source_fps", "reference_fps", "frame_count", "width", "height"] as const) {
+  for (const key of ["duration", "fps", "source_fps", "reference_fps", "frame_count", "width", "height", "rotation"] as const) {
     const number = finiteNumber(rawMedia[key]);
     if (number !== undefined) media[key] = number;
   }
@@ -144,12 +152,48 @@ export async function listLibraryFolders(query = ""): Promise<LibraryFolder[]> {
   });
 }
 
-export async function deriveLibraryMedia(source: MediaDeriveSource, request: MediaDeriveRequest): Promise<DerivedMedia> {
-  const body = await jsonRequest("/api/media/derive", {
+export async function deriveLibraryMedia(source: MediaDeriveSource, request: MediaDeriveRequest, options: MediaDeriveOptions = {}): Promise<DerivedMedia> {
+  const response = await fetch("/api/media/derive", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ source, ...request }),
-  }) as Record<string, unknown>;
+    body: JSON.stringify({ source, ...request, ...(request.operation === "prepare_h3_reference" ? { background: true } : {}) }),
+  });
+  let body = await response.json().catch(() => ({})) as Record<string, unknown> & { error?: { message?: string } };
+  if (!response.ok) throw new Error(body.error?.message ?? `资产操作失败 (${response.status})`);
+  if (response.status === 202) {
+    const taskId = typeof body.task_id === "string" && ASSET_ID.test(body.task_id) ? body.task_id : undefined;
+    if (!taskId) throw new Error("服务端未返回有效的媒体任务 ID");
+    let cancellationRequested = false;
+    const cancel = () => {
+      if (cancellationRequested) return;
+      cancellationRequested = true;
+      void fetch(`/api/media-tasks/${encodeURIComponent(taskId)}/cancel`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }).catch(() => undefined);
+    };
+    options.signal?.addEventListener("abort", cancel, { once: true });
+    try {
+      for (;;) {
+        if (options.signal?.aborted) { cancel(); throw new DOMException("媒体处理已取消", "AbortError"); }
+        const statusResponse = await fetch(`/api/media-tasks/${encodeURIComponent(taskId)}`, { cache: "no-store" });
+        body = await statusResponse.json().catch(() => ({})) as typeof body;
+        if (!statusResponse.ok) throw new Error(body.error?.message ?? `媒体任务读取失败 (${statusResponse.status})`);
+        const status = typeof body.status === "string" ? body.status : "";
+        const progress = Math.max(0, Math.min(100, Math.floor(finiteNumber(body.progress) ?? 0)));
+        options.onProgress?.(progress, status);
+        if (status === "completed") {
+          if (!body.receipt || typeof body.receipt !== "object") throw new Error("媒体任务完成但缺少派生回执");
+          body = body.receipt as typeof body;
+          break;
+        }
+        if (status === "failed" || status === "canceled") {
+          const failure = body.error && typeof body.error === "object" ? body.error as { message?: string } : {};
+          throw new Error(failure.message ?? (status === "canceled" ? "媒体处理已取消" : "媒体处理失败"));
+        }
+        await new Promise<void>((resolve) => globalThis.setTimeout(resolve, Math.max(200, options.pollIntervalMs ?? 500)));
+      }
+    } finally {
+      options.signal?.removeEventListener("abort", cancel);
+    }
+  }
   const value = body.derivation && typeof body.derivation === "object" ? body.derivation as Record<string, unknown> : body;
   const derived = remoteDerivationToResult(value);
   if (!derived) throw new Error("服务端未返回有效的派生媒体");
@@ -173,6 +217,23 @@ export function remoteDerivationToResult(receipt: unknown): DerivedMedia | undef
     ...(typeof value.asset_id === "string" && ASSET_ID.test(value.asset_id) ? { assetId: value.asset_id } : {}),
     pinned: value.pinned === true,
     media: value.media && typeof value.media === "object" ? value.media as LibraryMedia : {},
+    ...(value.preprocessing && typeof value.preprocessing === "object" ? { preprocessing: value.preprocessing as Record<string, unknown> } : {}),
+  };
+}
+
+export function estimateH3ReferenceCanvas(width: number, height: number, rotation = 0): { width: number; height: number } | undefined {
+  if (!Number.isInteger(width) || !Number.isInteger(height) || width <= 0 || height <= 0) return undefined;
+  const normalized = ((Math.round(rotation / 90) * 90) % 360 + 360) % 360;
+  const [displayWidth, displayHeight] = normalized === 90 || normalized === 270 ? [height, width] : [width, height];
+  const square = displayWidth === displayHeight;
+  const boxWidth = square ? 480 : displayWidth > displayHeight ? 864 : 480;
+  const boxHeight = square ? 480 : displayWidth > displayHeight ? 480 : 864;
+  const scale = Math.min(1, boxWidth / displayWidth, boxHeight / displayHeight);
+  const contentWidth = Math.max(2, Math.min(boxWidth, Math.round(displayWidth * scale / 2) * 2));
+  const contentHeight = Math.max(2, Math.min(boxHeight, Math.round(displayHeight * scale / 2) * 2));
+  return {
+    width: Math.min(boxWidth, Math.max(32, Math.ceil(contentWidth / 32) * 32)),
+    height: Math.min(boxHeight, Math.max(32, Math.ceil(contentHeight / 32) * 32)),
   };
 }
 

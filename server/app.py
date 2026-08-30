@@ -14,24 +14,28 @@ import urllib.parse
 import uuid
 import threading
 import math
-from dataclasses import dataclass, field
+import re
+from dataclasses import dataclass, field, replace
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
 from .comfy import ComfyClient, find_outputs
+from .checkpoints import CheckpointManager
 from .config import Config
 from .director_workflows import director_workflow_index, director_workflow_preset
 from .errors import ApiError
+from .h3_reference import estimate_packed_tokens, public_safety_policy, risk_assessment
 from .multipart import MultipartPart, parse_multipart
 from .profiles import DEFAULT_REGISTRY, ProfileRegistry
 from .security import safe_filename, secure_join, validate_id
 from .storage import AssetFolderStore, AssetStore, JobStore
 from .media import MediaService
+from .media_tasks import MediaTaskManager
 from .scene_analysis import SceneAnalysisService
 from .video_projects import VideoProjectManager
-from .workflows import compile_prompt_request, compile_workflow, parse_generation_request, workflow_evidence
+from .workflows import ResumeSamplingPlan, compile_prompt_request, compile_workflow, parse_generation_request, workflow_evidence
 
 
 @dataclass(slots=True)
@@ -47,7 +51,9 @@ class Runtime:
     projects: VideoProjectManager = field(init=False)
     folders: AssetFolderStore = field(init=False)
     media: MediaService = field(init=False)
+    media_tasks: MediaTaskManager = field(init=False)
     scene_analysis: SceneAnalysisService = field(init=False)
+    checkpoints: CheckpointManager = field(init=False)
     instance_id: str = field(init=False)
 
     def __post_init__(self) -> None:
@@ -58,7 +64,11 @@ class Runtime:
         )
         self.folders = AssetFolderStore(self.config.data_root / "metadata" / "asset-folders")
         self.media = MediaService(self.config, self.assets, self.mutation_lock)
+        self.media_tasks = MediaTaskManager(self.config.data_root, self.media)
         self.scene_analysis = SceneAnalysisService(self.assets)
+        self.checkpoints = CheckpointManager(
+            self.config, self.jobs, self.assets, self.registry, self.mutation_lock,
+        )
         identity_path = self.config.data_root / "metadata" / "dataset-id"
         identity_path.parent.mkdir(parents=True, exist_ok=True)
         try:
@@ -86,8 +96,11 @@ class H3StudioServer(ThreadingHTTPServer):
                 runtime.config.comfy_idle_free_seconds,
                 runtime.config.comfy_idle_poll_seconds,
             )
+        runtime.checkpoints.start_gc()
 
     def server_close(self) -> None:
+        self.runtime.media_tasks.stop()
+        self.runtime.checkpoints.stop_gc()
         stopper = getattr(self.runtime.comfy, "stop_idle_free_monitor", None)
         if callable(stopper):
             stopper()
@@ -309,6 +322,9 @@ class Handler(BaseHTTPRequestHandler):
             if len(active) >= self.runtime.config.max_active_jobs:
                 raise ApiError(429, "job_limit", f"at most {self.runtime.config.max_active_jobs} active jobs are allowed")
             spec = parse_generation_request(data, self.runtime.assets.get, self.runtime.registry)
+            spec, reference_preflight = self._prepare_risky_references(spec, request_id=request_id)
+            profile = self.runtime.registry.get(spec.profile_id)
+            resume_policy = self.runtime.checkpoints.profile_policy(profile)
             job_id = uuid.uuid4().hex
             job = {
                 "id": job_id,
@@ -337,9 +353,16 @@ class Handler(BaseHTTPRequestHandler):
                         "duration": reference.duration,
                         "voice_speaker": reference.voice_speaker,
                         "voice_subject": reference.voice_subject,
+                        "content_hash": self.runtime.assets.get(reference.asset_id).get("sha256"),
                     }
                     for reference in spec.references
                 ],
+                "reference_preflight": reference_preflight,
+                **({
+                    "chain_id": job_id,
+                    "parent_job_id": None,
+                    "checkpoint_pending": True,
+                } if resume_policy else {}),
                 "created_at": time.time(),
                 "updated_at": time.time(),
             }
@@ -347,7 +370,10 @@ class Handler(BaseHTTPRequestHandler):
             self.runtime.jobs.put(job_id, job)
             try:
                 self.runtime.comfy.ensure_capability(spec, self.runtime.config, self.runtime.registry)
-                workflow = compile_workflow(spec, self.runtime.config, job_id)
+                resume_plan = ResumeSamplingPlan(
+                    mode="initial", max_total_steps=int(resume_policy["max_total_steps"]),
+                ) if resume_policy else None
+                workflow = compile_workflow(spec, self.runtime.config, job_id, resume_plan)
                 workflow_json = json.dumps(workflow, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
                 workflow_sha256 = hashlib.sha256(workflow_json).hexdigest()
                 evidence_directory = self.runtime.config.data_root / "evidence" / "workflows"
@@ -360,6 +386,7 @@ class Handler(BaseHTTPRequestHandler):
                 job["workflow_evidence"] = {
                     **workflow_evidence(workflow, spec, job_id),
                     "sha256": workflow_sha256,
+                    "reference_preflight": reference_preflight,
                 }
                 job["parameters"].update({
                     "diffusion_model": job["workflow_evidence"]["diffusion_model"],
@@ -385,6 +412,260 @@ class Handler(BaseHTTPRequestHandler):
             },
         )
 
+    def _prepare_risky_references(self, spec, *, request_id: str):
+        if spec.output_type != "video" or spec.mode != "ref2va":
+            return spec, None
+        reference_media: list[dict[str, Any]] = []
+        for reference in spec.references:
+            if reference.kind != "video":
+                continue
+            asset = self.runtime.assets.get(reference.asset_id)
+            media = asset.get("media") if isinstance(asset.get("media"), dict) else {}
+            frames = int(media.get("frame_count", 0) or 0)
+            if frames <= 0:
+                frames = max(1, int(round(float(media.get("duration", 0) or 0) * float(media.get("fps", 24) or 24))))
+            reference_media.append({
+                "asset_id": reference.asset_id,
+                "width": int(media.get("width", 0) or 0),
+                "height": int(media.get("height", 0) or 0),
+                "frames": frames,
+            })
+        estimate = estimate_packed_tokens(
+            reference_media, target_width=spec.width, target_height=spec.height,
+            target_frames=spec.frames,
+        )
+        environment_getter = getattr(self.runtime.comfy, "execution_environment", None)
+        environment = environment_getter(self.runtime.config) if callable(environment_getter) else {
+            "gpu_architecture": self.runtime.config.gpu_architecture,
+            "attention_backend": self.runtime.config.attention_backend,
+        }
+        assessment = risk_assessment(
+            int(estimate["total_tokens"]),
+            gpu_architecture=str(environment.get("gpu_architecture", "unknown")),
+            attention_backend=str(environment.get("attention_backend", "unknown")),
+            threshold=self.runtime.config.h3_token_risk_threshold,
+        )
+        preflight: dict[str, Any] = {
+            "estimate": estimate, "risk": assessment, "optimized": False, "derivations": [],
+        }
+        if not assessment["requires_reference_optimization"]:
+            return spec, preflight
+        replacements: dict[str, Any] = {}
+        for reference in spec.references:
+            if reference.kind != "video":
+                continue
+            source = self.runtime.assets.get(reference.asset_id)
+            source_path = self.runtime.assets.content_path(source)
+            try:
+                receipt = self.runtime.media.derive(source_path, {
+                    **source,
+                    "source_receipt": {"type": "asset", "asset_id": reference.asset_id},
+                }, {
+                    "operation": "prepare_h3_reference",
+                    "preset": "h3-low-token",
+                    "audio": "keep" if reference.include_audio else "remove",
+                })
+                derived_asset = self.runtime.media.save_as_asset(str(receipt["id"]), visibility="internal")
+            except ApiError as error:
+                existing = error.details if isinstance(error.details, dict) else {}
+                raise ApiError(error.status, error.code, error.message, details={
+                    **existing,
+                    "stage": "reference_preprocessing",
+                    "retryable": True,
+                    "request_id": request_id,
+                    "source_asset_id": reference.asset_id,
+                    "materialized_locators": [
+                        f"media:{item['derivation_id']}" for item in preflight["derivations"]
+                    ],
+                }) from error
+            media = derived_asset.get("media") if isinstance(derived_asset.get("media"), dict) else {}
+            replacements[reference.asset_id] = replace(
+                reference,
+                asset_id=str(derived_asset["id"]),
+                comfy_path=str(self.runtime.assets.get(str(derived_asset["id"]))["comfy_path"]),
+                duration=float(media.get("duration", reference.duration) or 0),
+                fps=float(media.get("fps", 24) or 24),
+                has_audio=media.get("has_audio") is True,
+                include_audio=reference.include_audio and media.get("has_audio") is True,
+            )
+            preflight["derivations"].append({
+                "source_asset_id": reference.asset_id,
+                "derivation_id": receipt["id"],
+                "derived_asset_id": derived_asset["id"],
+                "original": receipt.get("preprocessing", {}).get("source"),
+                "output": receipt.get("preprocessing", {}).get("output"),
+                "reused": receipt.get("reused") is True,
+            })
+        references = tuple(replacements.get(item.asset_id, item) for item in spec.references)
+        source_asset_id = spec.source_asset_id
+        if source_asset_id in replacements:
+            source_asset_id = replacements[source_asset_id].asset_id
+        preflight["optimized"] = bool(replacements)
+        post_media = []
+        for item in references:
+            if item.kind != "video":
+                continue
+            asset = self.runtime.assets.get(item.asset_id)
+            media = asset.get("media") if isinstance(asset.get("media"), dict) else {}
+            frames = int(media.get("frame_count", 0) or 0) or max(1, int(round(float(media.get("duration", 0) or 0) * 24)))
+            post_media.append({"asset_id": item.asset_id, "width": media.get("width"), "height": media.get("height"), "frames": frames})
+        preflight["post_optimization_estimate"] = estimate_packed_tokens(
+            post_media, target_width=spec.width, target_height=spec.height, target_frames=spec.frames,
+        )
+        return replace(
+            spec, references=references, source_asset_id=source_asset_id,
+            reference_duration_total=sum(item.duration for item in references),
+        ), preflight
+
+    def _resume_job(self, requested_job_id: str) -> None:
+        data = self._read_json()
+        if set(data) - {"additional_steps", "request_id"}:
+            raise ApiError(400, "invalid_parameter", "resume only accepts additional_steps and request_id")
+        additional = data.get("additional_steps")
+        if isinstance(additional, bool) or not isinstance(additional, int) or additional <= 0:
+            raise ApiError(400, "invalid_additional_steps", "additional_steps must be a positive integer")
+        raw_request_id = data.get("request_id", uuid.uuid4().hex)
+        if not isinstance(raw_request_id, str) or not 8 <= len(raw_request_id) <= 128 or not re.fullmatch(r"[A-Za-z0-9._-]+", raw_request_id):
+            raise ApiError(400, "invalid_request_id", "request_id must be 8..128 URL-safe characters")
+        request_sha256 = hashlib.sha256(
+            json.dumps({"requested_job_id": requested_job_id, "additional_steps": additional}, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        with self.runtime.mutation_lock:
+            duplicate = next((item for item in self.runtime.jobs.list() if item.get("resume_request_id") == raw_request_id), None)
+            if duplicate:
+                if duplicate.get("resume_request_sha256") != request_sha256:
+                    raise ApiError(409, "idempotency_conflict", "request_id was already used with a different resume payload")
+                self._json(HTTPStatus.ACCEPTED, {
+                    "job_id": duplicate["id"], "parent_job_id": duplicate.get("parent_job_id"),
+                    "steps_before": duplicate.get("steps_before"), "additional_steps": duplicate.get("additional_steps"),
+                    "steps_after": (duplicate.get("parameters") or {}).get("steps"),
+                    "status": duplicate.get("status"), "idempotent_replay": True,
+                })
+                return
+            requested = self.runtime.jobs.get(validate_id(requested_job_id, "job id"))
+            requested_parameters = requested.get("parameters") if isinstance(requested.get("parameters"), dict) else {}
+            requested_profile = self.runtime.registry.get(str(requested_parameters.get("profile_id", "")))
+            if not self.runtime.checkpoints.profile_policy(requested_profile):
+                raise ApiError(409, "resume_unsupported", "the current Profile does not support resumable sampling")
+            manifest = self.runtime.checkpoints.latest(requested)
+            latest = self.runtime.jobs.get(validate_id(str(manifest["latest_job_id"]), "latest job id"))
+            chain_id = validate_id(str(manifest["chain_id"]), "checkpoint chain id")
+            busy = next((
+                item for item in self.runtime.jobs.list()
+                if str(item.get("chain_id") or item.get("id")) == chain_id
+                and item.get("status") in {"submitting", "queued", "running"}
+            ), None)
+            if busy:
+                raise ApiError(409, "resume_chain_busy", "another resume task is already running for this chain", details={"job_id": busy.get("id")})
+            policy = self.runtime.checkpoints.profile_policy(
+                self.runtime.registry.get(str((latest.get("parameters") or {}).get("profile_id", "")))
+            )
+            if not policy:
+                raise ApiError(409, "resume_unsupported", "the current Profile does not support resumable sampling")
+            lower, upper = policy.get("additional_steps", [1, int(policy["max_total_steps"])])
+            if additional < int(lower) or additional > int(upper):
+                raise ApiError(400, "invalid_additional_steps", f"additional_steps must be {lower}..{upper} for the current Profile")
+            steps_before = int(manifest.get("steps", 0) or 0)
+            steps_after = steps_before + additional
+            if steps_after > int(policy["max_total_steps"]):
+                raise ApiError(400, "max_steps_exceeded", "continued total steps exceed the current Profile maximum", details={
+                    "steps_before": steps_before, "additional_steps": additional,
+                    "steps_after": steps_after, "max_total_steps": policy["max_total_steps"],
+                })
+            active = [item for item in self.runtime.jobs.list() if item.get("status") in {"submitting", "queued", "running"}]
+            if len(active) >= self.runtime.config.max_active_jobs:
+                raise ApiError(429, "job_limit", f"at most {self.runtime.config.max_active_jobs} active jobs are allowed")
+            spec = self.runtime.checkpoints.build_spec(latest, steps=steps_after)
+            job_id = uuid.uuid4().hex
+            checkpoint_locator, checkpoint_path = self.runtime.checkpoints.stage_input(manifest, job_id)
+            job = {
+                "id": job_id, "job_id": job_id,
+                "request_id": raw_request_id,
+                "resume_request_id": raw_request_id,
+                "resume_request_sha256": request_sha256,
+                "prompt_id": None, "client_id": f"h3-studio-{job_id}",
+                "status": "submitting", "output_type": "video",
+                "raw_prompt": latest.get("raw_prompt", ""),
+                "prompt_parts": latest.get("prompt_parts", {}),
+                "prompt": latest.get("prompt", ""), "negative_prompt": "",
+                "parameters": spec.public_parameters(),
+                "director_mode": latest.get("director_mode"),
+                "source_asset_id": latest.get("source_asset_id"),
+                "graph": latest.get("graph", {}),
+                "references": latest.get("references", []),
+                "chain_id": chain_id, "parent_job_id": latest["id"],
+                "steps_before": steps_before, "additional_steps": additional,
+                "checkpoint_pending": True,
+                "checkpoint_input_staged": checkpoint_path.name,
+                "created_at": time.time(), "updated_at": time.time(),
+            }
+            job["submission_started_at"] = job["created_at"]
+            try:
+                self.runtime.jobs.put(job_id, job)
+                self.runtime.comfy.ensure_capability(spec, self.runtime.config, self.runtime.registry)
+                workflow = compile_workflow(spec, self.runtime.config, job_id, ResumeSamplingPlan(
+                    mode="resume", max_total_steps=int(policy["max_total_steps"]),
+                    steps_before=steps_before, additional_steps=additional,
+                    checkpoint_input=checkpoint_locator,
+                ))
+                workflow_json = json.dumps(workflow, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+                workflow_sha256 = hashlib.sha256(workflow_json).hexdigest()
+                evidence_directory = self.runtime.config.data_root / "evidence" / "workflows"
+                evidence_directory.mkdir(parents=True, exist_ok=True)
+                temporary_path = evidence_directory / f"{job_id}.json.tmp"
+                temporary_path.write_bytes(workflow_json)
+                temporary_path.replace(evidence_directory / f"{job_id}.json")
+                job["workflow_sha256"] = workflow_sha256
+                job["workflow_evidence"] = {
+                    **workflow_evidence(workflow, spec, job_id),
+                    "sha256": workflow_sha256,
+                    "chain_id": chain_id,
+                    "parent_job_id": latest["id"],
+                    "steps_before": steps_before,
+                    "additional_steps": additional,
+                    "steps_after": steps_after,
+                    "checkpoint_format": manifest.get("format"),
+                    "checkpoint_sha256": manifest.get("sha256"),
+                }
+                job["parameters"].update({
+                    "diffusion_model": job["workflow_evidence"]["diffusion_model"],
+                    "lora": job["workflow_evidence"]["lora"],
+                })
+                self.runtime.jobs.put(job_id, job)
+                prompt_id = self.runtime.comfy.submit(workflow, str(job["client_id"]))
+            except ApiError as error:
+                checkpoint_path.unlink(missing_ok=True)
+                job.update({"status": "failed", "message": error.message, "error_code": error.code, "checkpoint_pending": False, "updated_at": time.time()})
+                self.runtime.jobs.put(job_id, job)
+                raise
+            except Exception:
+                checkpoint_path.unlink(missing_ok=True)
+                job.update({"status": "failed", "message": "resume submission failed", "error_code": "internal_error", "checkpoint_pending": False, "updated_at": time.time()})
+                self.runtime.jobs.put(job_id, job)
+                raise
+            job.update({"prompt_id": prompt_id, "status": "queued", "updated_at": time.time()})
+            self.runtime.jobs.put(job_id, job)
+        self._json(HTTPStatus.ACCEPTED, {
+            "job_id": job_id, "parent_job_id": latest["id"], "chain_id": chain_id,
+            "steps_before": steps_before, "additional_steps": additional,
+            "steps_after": steps_after, "status": "queued",
+            "status_url": f"/api/status?id={job_id}",
+        })
+
+    def _with_resume(self, job: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
+        resume = self.runtime.checkpoints.status(job)
+        return {
+            **result,
+            "resume": resume,
+            "can_resume": resume.get("can_resume", False),
+            "resume_unavailable_reason": resume.get("reason"),
+            "current_steps": resume.get("current_steps"),
+            "max_total_steps": resume.get("max_total_steps"),
+            "latest_job_id": resume.get("latest_job_id"),
+            "checkpoint_created_at": resume.get("checkpoint_created_at"),
+            "checkpoint_expires_at": resume.get("checkpoint_expires_at"),
+        }
+
     def _job_status(self, job_id: str) -> dict[str, Any]:
         job = self.runtime.jobs.get(validate_id(job_id, "job id"))
         timestamps = {
@@ -397,8 +678,8 @@ class Handler(BaseHTTPRequestHandler):
             "director_mode": job.get("director_mode"),
             "source_asset_id": job.get("source_asset_id"),
         }
-        if job.get("status") == "completed" and isinstance(job.get("outputs"), list) and job["outputs"]:
-            return {
+        if job.get("status") == "completed" and isinstance(job.get("outputs"), list) and job["outputs"] and not job.get("checkpoint_pending"):
+            return self._with_resume(job, {
                 **timestamps, **request_evidence,
                 "id": job_id, "job_id": job_id, "prompt_id": job.get("prompt_id"),
                 "status": "completed", "state": "completed", "progress": 100,
@@ -410,7 +691,7 @@ class Handler(BaseHTTPRequestHandler):
                 "thumbnail_url": f"/api/jobs/{job_id}/thumbnail?index=0" if job.get("output_type") in {"image", "video"} else None,
                 "download_url": f"/api/download?id={job_id}&index=0",
                 "url": f"/api/download?id={job_id}&index=0",
-        }
+            })
         if job.get("status") == "submitting" and not job.get("prompt_id"):
             try:
                 recovered_prompt = self.runtime.comfy.find_prompt_by_client_id(str(job.get("client_id", "")))
@@ -427,7 +708,7 @@ class Handler(BaseHTTPRequestHandler):
                 })
                 self.runtime.jobs.put(job_id, job)
             else:
-                return {
+                return self._with_resume(job, {
                     **timestamps, **request_evidence, "id": job_id, "job_id": job_id,
                     "status": "submitting", "state": "submitting", "progress": 0,
                     "message": "reconciling submission with ComfyUI",
@@ -435,11 +716,12 @@ class Handler(BaseHTTPRequestHandler):
                     "prompt": job.get("prompt"), "references": job.get("references", []),
                     "workflow_sha256": job.get("workflow_sha256"),
                     "workflow_evidence": job.get("workflow_evidence"),
-                }
+                })
             timestamps["updated_at"] = job.get("updated_at")
         if job.get("status") in {"failed", "canceled"} or not job.get("prompt_id"):
             state = "canceled" if job.get("status") == "canceled" else "failed"
-            return {**timestamps, **request_evidence, "id": job_id, "job_id": job_id, "status": state, "state": state, "progress": 100, "message": str(job.get("message", "generation submission failed")), "output_type": job.get("output_type"), "parameters": job.get("parameters", {}), "prompt": job.get("prompt"), "references": job.get("references", []), "workflow_sha256": job.get("workflow_sha256"), "workflow_evidence": job.get("workflow_evidence")}
+            self.runtime.checkpoints.cleanup_staged(job)
+            return self._with_resume(job, {**timestamps, **request_evidence, "id": job_id, "job_id": job_id, "status": state, "state": state, "progress": 100, "message": str(job.get("message", "generation submission failed")), "output_type": job.get("output_type"), "parameters": job.get("parameters", {}), "prompt": job.get("prompt"), "references": job.get("references", []), "workflow_sha256": job.get("workflow_sha256"), "workflow_evidence": job.get("workflow_evidence")})
         comfy_status = self.runtime.comfy.status(str(job["prompt_id"]))
         state = comfy_status["status"]
         if state == "not_found":
@@ -508,7 +790,25 @@ class Handler(BaseHTTPRequestHandler):
                 job["message"] = result["message"]
             self.runtime.jobs.put(job_id, job)
             result["updated_at"] = job["updated_at"]
-        return result
+        if state == "completed" and job.get("checkpoint_pending") and isinstance(record, dict):
+            try:
+                checkpoint = self.runtime.checkpoints.capture(job, record)
+                if checkpoint:
+                    job.update({
+                        "checkpoint_pending": False,
+                        "checkpoint_id": checkpoint.get("checkpoint_id"),
+                        "checkpoint_created_at": checkpoint.get("created_at"),
+                        "checkpoint_expires_at": checkpoint.get("expires_at"),
+                    })
+            except ApiError as error:
+                job.update({"checkpoint_pending": False, "checkpoint_error": error.code})
+                result["checkpoint_error"] = error.as_dict()["error"]
+            job["updated_at"] = time.time()
+            self.runtime.jobs.put(job_id, job)
+            result["updated_at"] = job["updated_at"]
+        if state in {"completed", "failed"}:
+            self.runtime.checkpoints.cleanup_staged(job)
+        return self._with_resume(job, result)
 
     def _cancel_job(self, job_id: str) -> None:
         job_id = validate_id(job_id, "job id")
@@ -522,6 +822,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.runtime.comfy.cancel(prompt_id)
             job.update({"status": "canceled", "message": "canceled by user", "updated_at": time.time()})
             self.runtime.jobs.put(job_id, job)
+            self.runtime.checkpoints.cleanup_staged(job)
         self._json(HTTPStatus.OK, {"id": job_id, "status": "canceled"})
 
     def _asset_references(self, *, active_only: bool = False) -> set[str]:
@@ -659,7 +960,10 @@ class Handler(BaseHTTPRequestHandler):
         temporary_media = {"derivation_receipts": 0, "derivation_files": 0, "thumbnails": 0}
         if not dry_run:
             temporary_media = self.runtime.media.garbage_collect(older_than_seconds=days * 86400)
-        self._json(HTTPStatus.OK, {"dry_run": dry_run, "older_than_days": days, "count": len(candidates), "bytes": sum(int(asset.get("storage_size", asset.get("size", 0))) for asset in candidates), "asset_ids": [asset.get("id") for asset in candidates], "temporary_media": temporary_media})
+        checkpoint_gc = {"manifests": 0, "files": 0, "temporary_files": 0}
+        if not dry_run:
+            checkpoint_gc = self.runtime.checkpoints.garbage_collect()
+        self._json(HTTPStatus.OK, {"dry_run": dry_run, "older_than_days": days, "count": len(candidates), "bytes": sum(int(asset.get("storage_size", asset.get("size", 0))) for asset in candidates), "asset_ids": [asset.get("id") for asset in candidates], "temporary_media": temporary_media, "checkpoints": checkpoint_gc})
 
     def _result(self, job_id: str) -> None:
         status = self._job_status(job_id)
@@ -705,9 +1009,17 @@ class Handler(BaseHTTPRequestHandler):
             return "video"
         return None
 
-    @staticmethod
-    def _listed_payload(job: dict[str, Any], *, summary: bool = False) -> dict[str, Any]:
+    def _listed_payload(self, job: dict[str, Any], *, summary: bool = False) -> dict[str, Any]:
         payload = {key: value for key, value in job.items() if key not in {"workflow", "graph"}}
+        resume = self.runtime.checkpoints.status(job)
+        payload.update({
+            "resume": resume,
+            "can_resume": resume.get("can_resume", False),
+            "current_steps": resume.get("current_steps"),
+            "max_total_steps": resume.get("max_total_steps"),
+            "latest_job_id": resume.get("latest_job_id"),
+            "checkpoint_expires_at": resume.get("checkpoint_expires_at"),
+        })
         inferred_output_type = Handler._visual_output_type(job)
         if inferred_output_type and payload.get("output_type") not in {"image", "video"}:
             payload["output_type"] = inferred_output_type
@@ -716,6 +1028,8 @@ class Handler(BaseHTTPRequestHandler):
                 "id", "job_id", "status", "progress", "message", "output_type",
                 "parameters", "workflow_sha256", "created_at", "updated_at", "outputs", "prompt",
                 "pinned",
+                "resume", "can_resume", "current_steps", "max_total_steps",
+                "latest_job_id", "checkpoint_expires_at",
             }
             payload = {key: value for key, value in payload.items() if key in allowed}
             if isinstance(payload.get("prompt"), str):
@@ -1066,6 +1380,10 @@ class Handler(BaseHTTPRequestHandler):
         operation_fields = {
             "video_trim": {"start", "end"}, "audio_trim": {"start", "end"},
             "frame": {"position", "time"}, "extract_audio": set(), "remove_audio": set(),
+            "prepare_h3_reference": {
+                "preset", "max_short_edge", "max_long_edge", "fps", "max_duration",
+                "audio", "fit", "alignment", "pad_mode", "background",
+            },
         }
         operation = data.get("operation")
         if operation not in operation_fields or set(data) - common - operation_fields[operation]:
@@ -1109,6 +1427,15 @@ class Handler(BaseHTTPRequestHandler):
         current_media = meta.get("media") if isinstance(meta.get("media"), dict) else {}
         if str(meta.get("kind")) in {"video", "audio"} and not float(current_media.get("duration", 0) or 0):
             meta["media"] = AssetStore._probe_media(path, str(meta["kind"]))
+        background = data.pop("background", False)
+        if not isinstance(background, bool):
+            raise ApiError(400, "invalid_parameter", "background must be a boolean")
+        if background:
+            if operation != "prepare_h3_reference":
+                raise ApiError(400, "invalid_parameter", "background processing is only supported for prepare_h3_reference")
+            task = self.runtime.media_tasks.submit(path, meta, data)
+            self._json(HTTPStatus.ACCEPTED, task)
+            return
         receipt = self.runtime.media.derive(path, meta, data)
         self._json(HTTPStatus.CREATED, {**receipt, "receipt": receipt})
 
@@ -1163,13 +1490,18 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/media/analyze-scenes":
                 self._json(HTTPStatus.OK, self.runtime.scene_analysis.analyze(self._read_json()))
                 return
+            segments = [segment for segment in path.split("/") if segment]
+            if len(segments) == 4 and segments[:2] == ["api", "media-tasks"] and segments[3] == "cancel":
+                if self.headers.get("Content-Length", "0") != "0":
+                    self._read_json()
+                self._json(HTTPStatus.ACCEPTED, self.runtime.media_tasks.cancel(segments[2]))
+                return
             if path in {"/api/generate", "/generate"}:
                 self._generate()
                 return
             if path == "/api/prompts/compile":
                 self._json(HTTPStatus.OK, compile_prompt_request(self._read_json(), self.runtime.assets.get))
                 return
-            segments = [segment for segment in path.split("/") if segment]
             if segments == ["api", "video-projects"]:
                 self._json(HTTPStatus.CREATED, self.runtime.projects.create(
                     self._read_json(maximum=self.runtime.config.max_project_json_bytes)
@@ -1192,6 +1524,9 @@ class Handler(BaseHTTPRequestHandler):
                 if self._read_json():
                     raise ApiError(400, "invalid_action", "segment run body must be an empty JSON object")
                 self._json(HTTPStatus.ACCEPTED, self.runtime.projects.rerun_segment(segments[2], segments[4]))
+                return
+            if len(segments) == 4 and segments[:2] == ["api", "jobs"] and segments[3] == "resume":
+                self._resume_job(segments[2])
                 return
             if len(segments) == 4 and segments[:2] == ["api", "jobs"] and segments[3] == "cancel":
                 if self.headers.get("Content-Length", "0") != "0":
@@ -1375,7 +1710,10 @@ class Handler(BaseHTTPRequestHandler):
             self._require_auth()
             query = urllib.parse.parse_qs(parsed.query)
             if path in {"/api/capabilities", "/capabilities"}:
-                self._json(HTTPStatus.OK, self.runtime.comfy.capabilities(self.runtime.config, self.runtime.registry))
+                capabilities = self.runtime.comfy.capabilities(self.runtime.config, self.runtime.registry)
+                safety_policy = public_safety_policy()
+                safety_policy["risk_threshold"] = self.runtime.config.h3_token_risk_threshold
+                self._json(HTTPStatus.OK, {**capabilities, "h3_reference_safety_policy": safety_policy})
                 return
             if path == "/api/workflows/director":
                 self._json(HTTPStatus.OK, director_workflow_index())
@@ -1450,6 +1788,9 @@ class Handler(BaseHTTPRequestHandler):
                 return
 
             segments = [segment for segment in path.split("/") if segment]
+            if len(segments) == 3 and segments[:2] == ["api", "media-tasks"]:
+                self._json(HTTPStatus.OK, self.runtime.media_tasks.get(segments[2]))
+                return
             if len(segments) == 4 and segments[:3] == ["api", "workflows", "director"]:
                 preset = director_workflow_preset(segments[3])
                 if query.get("download", [""])[0] == "1":
@@ -1534,6 +1875,8 @@ class Handler(BaseHTTPRequestHandler):
                             "download": "/api/download?id=...",
                             "thumbnail": "/api/jobs/:id/thumbnail?index=0",
                             "derive_media": "POST /api/media/derive",
+                            "prepare_h3_reference": "POST /api/media/derive operation=prepare_h3_reference",
+                            "media_task": "GET /api/media-tasks/:id; POST /api/media-tasks/:id/cancel",
                             "derivations": "GET /api/derivations",
                             "analyze_scenes": "POST /api/media/analyze-scenes",
                             "save_derivation": "POST /api/derivations/:id/assets",

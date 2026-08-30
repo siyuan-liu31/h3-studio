@@ -58,6 +58,15 @@ func ValidateInput(name string, input map[string]any) error {
 		if input["end"].(float64) <= input["start"].(float64) {
 			return usageError("input.end must be after input.start")
 		}
+	case "media.prepare_reference":
+		short, hasShort := input["max_short_edge"].(float64)
+		long, hasLong := input["max_long_edge"].(float64)
+		if hasShort && hasLong && short > long {
+			return usageError("input.max_short_edge cannot exceed input.max_long_edge")
+		}
+		if _, hasAudio := input["audio"]; !hasAudio && input["preset"] != "h3-low-token" {
+			return usageError("input requires audio keep|remove unless preset is h3-low-token")
+		}
 	}
 	return nil
 }
@@ -178,12 +187,21 @@ func buildDefinitions() map[string]Definition {
 	add("job.download", []string{"job_id", "to"}, map[string]any{"job_id": idRule, "index": integerRule(0), "to": stringRule, "force": boolRule})
 	add("job.save", []string{"job_id"}, map[string]any{"job_id": idRule, "index": integerRule(0), "display_name": map[string]any{"type": "string"}, "folder_id": idRule})
 	add("job.workflow", []string{"job_id"}, map[string]any{"job_id": idRule, "to": map[string]any{"type": "string"}, "force": boolRule})
+	add("job.resume", []string{"job_id", "additional_steps"}, map[string]any{"job_id": idRule, "additional_steps": integerRule(1), "request_id": map[string]any{"type": "string", "minLength": float64(8)}, "wait": boolRule, "timeout_seconds": numberRule(0), "poll_seconds": numberRule(0), "download": map[string]any{"type": "string"}, "force": boolRule})
 	add("job.delete", []string{"job_id"}, map[string]any{"job_id": idRule})
 	add("media.frame", []string{"source", "position"}, map[string]any{"source": stringRule, "position": enum("first", "last", "current"), "time": numberRule(0), "display_name": map[string]any{"type": "string"}})
 	add("media.endpoints", []string{"source"}, map[string]any{"source": stringRule})
 	add("media.trim", []string{"source", "start", "end"}, map[string]any{"source": stringRule, "start": numberRule(0), "end": numberRule(0), "audio": boolRule, "display_name": map[string]any{"type": "string"}})
 	add("media.extract_audio", []string{"source"}, map[string]any{"source": stringRule, "display_name": map[string]any{"type": "string"}})
 	add("media.remove_audio", []string{"source"}, map[string]any{"source": stringRule, "display_name": map[string]any{"type": "string"}})
+	add("media.prepare_reference", []string{"source"}, map[string]any{
+		"source": stringRule, "preset": enum("h3-low-token"),
+		"max_short_edge": integerRule(32), "max_long_edge": integerRule(32),
+		"fps":          map[string]any{"type": "integer", "enum": []any{float64(24)}},
+		"max_duration": numberRule(0.001), "audio": enum("keep", "remove"),
+		"fit": enum("contain"), "alignment": map[string]any{"type": "integer", "enum": []any{float64(32)}},
+		"pad_mode": enum("edge"), "display_name": map[string]any{"type": "string"},
+	})
 	add("media.list", nil, map[string]any{})
 	add("media.get", []string{"media_id"}, map[string]any{"media_id": idRule})
 	add("media.download", []string{"media_id", "to"}, map[string]any{"media_id": idRule, "to": stringRule, "force": boolRule})

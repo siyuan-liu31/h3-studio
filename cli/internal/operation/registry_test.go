@@ -86,7 +86,7 @@ func TestEveryPublishedSchemaCompilesAsDraft202012(t *testing.T) {
 }
 
 func TestRegistryAndExecuteCoverWorkflowAtoms(t *testing.T) {
-	required := []string{"asset.copy", "media.endpoints", "media.save", "media.download", "project.create", "project.apply", "project.list", "project.get", "project.wait", "project.run", "project.merge", "project.download", "job.list", "job.get", "job.wait", "job.cancel", "job.download", "job.save", "job.delete", "generate.image", "generate.video"}
+	required := []string{"asset.copy", "media.endpoints", "media.prepare_reference", "media.save", "media.download", "project.create", "project.apply", "project.list", "project.get", "project.wait", "project.run", "project.merge", "project.download", "job.list", "job.get", "job.wait", "job.resume", "job.cancel", "job.download", "job.save", "job.delete", "generate.image", "generate.video"}
 	names := map[string]bool{}
 	for _, definition := range Definitions() {
 		names[definition.Name] = true
@@ -148,6 +148,9 @@ func TestEveryPublishedOperationExecutesAndRejectsUnknownInput(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]any{"job_id": idB})
 		case r.URL.Path == "/api/status":
 			_ = json.NewEncoder(w).Encode(map[string]any{"status": "completed", "job_id": idB})
+		case strings.HasSuffix(r.URL.Path, "/resume"):
+			w.WriteHeader(http.StatusAccepted)
+			_ = json.NewEncoder(w).Encode(map[string]any{"job_id": idB, "status": "queued"})
 		case r.URL.Path == "/api/media/derive":
 			w.WriteHeader(http.StatusCreated)
 			_ = json.NewEncoder(w).Encode(map[string]any{"receipt_id": idC})
@@ -194,12 +197,14 @@ func TestEveryPublishedOperationExecutesAndRejectsUnknownInput(t *testing.T) {
 		{"job.download", fmt.Sprintf(`{"job_id":%q,"to":%q}`, idB, filepath.Join(temp, "job.bin")), "GET", "/api/download?id=" + idB + "&index=0", "", nil, 1},
 		{"job.save", fmt.Sprintf(`{"job_id":%q}`, idB), "POST", "/api/jobs/" + idB + "/assets", "visibility", "library", 1},
 		{"job.workflow", fmt.Sprintf(`{"job_id":%q}`, idB), "GET", "/api/jobs/" + idB + "/workflow", "", nil, 1},
+		{"job.resume", fmt.Sprintf(`{"job_id":%q,"additional_steps":2}`, idB), "POST", "/api/jobs/" + idB + "/resume", "additional_steps", float64(2), 1},
 		{"job.delete", fmt.Sprintf(`{"job_id":%q}`, idB), "DELETE", "/api/jobs/" + idB, "", nil, 1},
 		{"media.frame", fmt.Sprintf(`{"source":"asset:%s","position":"first"}`, idA), "POST", "/api/media/derive", "position", "first", 1},
 		{"media.endpoints", fmt.Sprintf(`{"source":"asset:%s"}`, idA), "POST", "/api/media/derive", "position", "last", 2},
 		{"media.trim", fmt.Sprintf(`{"source":"asset:%s","start":0,"end":1}`, idA), "POST", "/api/media/derive", "operation", "video_trim", 1},
 		{"media.extract_audio", fmt.Sprintf(`{"source":"asset:%s"}`, idA), "POST", "/api/media/derive", "operation", "extract_audio", 1},
 		{"media.remove_audio", fmt.Sprintf(`{"source":"asset:%s"}`, idA), "POST", "/api/media/derive", "operation", "remove_audio", 1},
+		{"media.prepare_reference", fmt.Sprintf(`{"source":"asset:%s","preset":"h3-low-token"}`, idA), "POST", "/api/media/derive", "operation", "prepare_h3_reference", 1},
 		{"media.list", `{}`, "GET", "/api/derivations", "", nil, 1},
 		{"media.get", fmt.Sprintf(`{"media_id":%q}`, idC), "GET", "/api/derivations/" + idC, "", nil, 1},
 		{"media.download", fmt.Sprintf(`{"media_id":%q,"to":%q}`, idC, filepath.Join(temp, "media.bin")), "GET", "/api/derivations/" + idC + "/download", "", nil, 1},
@@ -278,5 +283,35 @@ func TestNonIdempotentCreateInvalidIDsAreNotMarkedRetryable(t *testing.T) {
 				t.Fatalf("calls=%d err=%#v", calls, err)
 			}
 		})
+	}
+}
+
+func TestPrepareReferenceContextCancellationCancelsRemoteMediaTask(t *testing.T) {
+	idA, taskID := strings.Repeat("a", 32), strings.Repeat("e", 32)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cancelCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/api/media/derive":
+			w.WriteHeader(http.StatusAccepted)
+			_ = json.NewEncoder(w).Encode(map[string]any{"task_id": taskID, "status": "queued"})
+			go func() { time.Sleep(10 * time.Millisecond); cancel() }()
+		case r.Method == http.MethodGet && r.URL.Path == "/api/media-tasks/"+taskID:
+			_ = json.NewEncoder(w).Encode(map[string]any{"task_id": taskID, "status": "running", "progress": 20})
+		case r.Method == http.MethodPost && r.URL.Path == "/api/media-tasks/"+taskID+"/cancel":
+			cancelCalls++
+			w.WriteHeader(http.StatusAccepted)
+			_ = json.NewEncoder(w).Encode(map[string]any{"task_id": taskID, "status": "cancelling"})
+		default:
+			t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	service := &Service{API: api.New(server.URL, time.Second), Context: "test", PollInterval: time.Millisecond}
+	_, err := service.DeriveWithEvents(ctx, "asset:"+idA, map[string]any{"operation": "prepare_h3_reference", "preset": "h3-low-token"}, nil)
+	var typed *contract.CLIError
+	if !errors.As(err, &typed) || typed.Code != "cancelled" || cancelCalls != 1 {
+		t.Fatalf("cancelCalls=%d err=%#v", cancelCalls, err)
 	}
 }

@@ -43,6 +43,10 @@ def full_object_info():
         "EmptyLatentImage",
         "KSampler",
         "SaveImage",
+        "SplitSigmas",
+        "SaveLatent",
+        "LoadLatent",
+        "DisableNoise",
     }
     info = {name: {} for name in names}
     info["UNETLoader"] = choices("unet_name", ["fl.safetensors", "ref.safetensors"])
@@ -168,6 +172,14 @@ def z_image_lora_object_info(*, installed: bool, complete_schema: bool = True):
 
 
 class CapabilityTests(unittest.TestCase):
+    def test_execution_environment_detects_blackwell_from_current_comfy_device_name(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            client = ComfyClient("http://unused")
+            with patch.object(client, "health", return_value={"devices": [{"name": "cuda:0 NVIDIA GeForce RTX 5090 : cudaMallocAsync"}]}):
+                value = client.execution_environment(config(Path(directory)))
+            self.assertIn("sm120", value["gpu_architecture"])
+            self.assertEqual(value["attention_backend"], "SageAttention")
+
     def test_z_image_latent_img2img_capability_and_edit_placeholder_are_honest(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             client = ComfyClient("http://unused")

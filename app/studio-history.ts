@@ -39,6 +39,16 @@ export type StudioJob = {
   createdAt?: string;
   updatedAt?: string;
   pinned?: boolean;
+  resume?: {
+    supported: boolean;
+    can_resume: boolean;
+    reason?: string | null;
+    current_steps: number;
+    max_total_steps: number;
+    latest_job_id?: string;
+    checkpoint_created_at?: number;
+    checkpoint_expires_at?: number;
+  };
 };
 
 /**
@@ -199,7 +209,23 @@ export function serverJobToStudioJob(receipt: Record<string, unknown>): StudioJo
     createdAt: Number.isFinite(created) && created > 0 ? new Date(created * 1000).toISOString() : undefined,
     updatedAt: Number.isFinite(updated) && updated > 0 ? new Date(updated * 1000).toISOString() : undefined,
     pinned: receipt.pinned === true,
+    ...(receipt.resume && typeof receipt.resume === "object" ? { resume: receipt.resume as StudioJob["resume"] } : {}),
   };
+}
+
+export async function resumeGenerationJob(jobId: string, additionalSteps: number): Promise<Record<string, unknown>> {
+  if (!/^[0-9a-f]{32}$/.test(jobId)) throw new Error("任务 ID 无效");
+  if (!Number.isInteger(additionalSteps) || additionalSteps <= 0) throw new Error("追加步数必须是正整数");
+  const requestId = crypto.randomUUID().replaceAll("-", "");
+  const response = await fetch(`/api/jobs/${encodeURIComponent(jobId)}/resume`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ additional_steps: additionalSteps, request_id: requestId }),
+  });
+  const body = await response.json().catch(() => ({})) as Record<string, unknown> & { error?: { message?: string } };
+  if (!response.ok) throw new Error(body.error?.message ?? `续跑提交失败 (${response.status})`);
+  if (typeof body.job_id !== "string" || !/^[0-9a-f]{32}$/.test(body.job_id)) throw new Error("服务端未返回有效的续跑任务 ID");
+  return body;
 }
 
 function printable(value: unknown): string {

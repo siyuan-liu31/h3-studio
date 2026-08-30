@@ -126,9 +126,32 @@ h3ctl media endpoints job:ID#0
 h3ctl media trim asset:ID --start 1 --end 5
 h3ctl media extract-audio asset:ID
 h3ctl media remove-audio asset:ID
+h3ctl media prepare-reference ./large-reference.mp4 --preset h3-low-token
+h3ctl media prepare-reference asset:ID --audio keep --max-duration 15
 ```
 
 These call `/api/media/derive` and return derivation receipts. Use `media save` to promote a receipt into the asset library, or `media download` to download it locally.
+
+`media prepare-reference` submits ffmpeg work as a durable background media task on the H3 Studio server, polls its status, and emits `media_submitted` / `media_progress` JSONL events (or human progress on stderr). Pressing Ctrl-C cancels this remote preprocessing task; completed receipts survive client disconnects and can be recovered from the server. It preserves display orientation and aspect ratio, limits the H3 reference canvas to 480/864 edges, aligns it to 32 pixels, produces 24 FPS H.264/YUV420P, and never overwrites the source. Without `--preset h3-low-token`, `--audio keep|remove` is required explicitly. The returned `media:ID` can be passed directly to generation or saved to the asset library.
+
+On `sm120 + SageAttention`, the server also evaluates the complete Ref2VA packed sequence before submission. When the configured versioned policy is exceeded, it creates the same controlled derivation automatically and records the original/derived mapping in the job receipt; target resolution, duration, steps, model, and prompt remain unchanged. A preprocessing failure prevents generation submission and returns its stage, request ID, and already-materialized locators.
+
+## Resumable Base sampling
+
+Only H3 Base Profiles that advertise `resume.supported=true` can continue from a latent checkpoint. Turbo LoRA Profiles remain unsupported until their behavior beyond the tested schedule is validated.
+
+```bash
+h3ctl generate video --profile minimax-h3-fl2va-base --steps 7 \
+  --mode t2v --prompt 'A slow cinematic sunrise'
+
+h3ctl job resume job:ID --additional-steps 3
+h3ctl job resume job:ID --additional-steps 3 \
+  --wait --poll-interval 5s --download ./continued.mp4
+```
+
+The server resolves any task ID in a continuation chain to its latest valid checkpoint. A resume creates a new immutable result, executes only the requested new sigma segment, and replaces the chain checkpoint only after the new latent is stored and verified. The prior result and checkpoint survive failure or cancellation. Profile identity, model, LoRA state, prompt, seed, sampling settings, shape, and reference hashes are validated; a mismatch fails explicitly and never falls back to regeneration.
+
+Checkpoint retention is configured server-side (24–72 hours, default 48). Job list and status receipts expose current/max steps, latest task, expiry, `can_resume`, and a truthful unavailable reason. Only one continuation may run per chain.
 
 ## Atomic operations and future workflows
 
@@ -140,7 +163,7 @@ h3ctl operation schema media.frame --json
 h3ctl operation run media.frame --input request.json --json
 ```
 
-`operation run` validates required fields, primitive types, enums, unknown fields, and integer values against the same schema returned by `operation schema`; it does not truncate numbers. Generation operation references accept the same local/file/asset/job/media locators as typed generation. `workflow` is reserved in v1 and returns an explicit `unsupported` error. A later resumable DAG engine can call the same operation service objects directly instead of spawning nested CLI processes. The raw ComfyUI graph for a completed generation remains available separately through `job workflow`.
+`operation run` validates required fields, primitive types, enums, unknown fields, and integer values against the same schema returned by `operation schema`; it does not truncate numbers. Generation operation references accept the same local/file/asset/job/media locators as typed generation. `workflow` is reserved in v1 and returns an explicit `unsupported` error. A later workflow DAG engine can call the same operation service objects directly instead of spawning nested CLI processes. The raw ComfyUI graph for a completed generation remains available separately through `job workflow`.
 
 ## Current API boundaries
 

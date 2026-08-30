@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { imageDimensions } from "../app/studio-config.ts";
-import { remoteAssetToLibraryItem, remoteDerivationToResult } from "../app/studio-library.ts";
+import { deriveLibraryMedia, estimateH3ReferenceCanvas, remoteAssetToLibraryItem, remoteDerivationToResult } from "../app/studio-library.ts";
 
 test("image quality and aspect ratio map to the exact requested dimensions", () => {
   const expected = {
@@ -106,4 +106,90 @@ test("normalized video receipts preserve source fps for Director frame contracts
     media: { duration: 10, fps: 24, source_fps: 30, reference_fps: 24, frame_count: 300, normalized_to_24fps: true },
   });
   assert.deepEqual(asset?.media, { duration: 10, fps: 24, source_fps: 30, reference_fps: 24, frame_count: 300, normalized_to_24fps: true });
+});
+
+test("H3 reference preview preserves orientation, aspect family, rotation, and 32-pixel alignment", () => {
+  assert.deepEqual(estimateH3ReferenceCanvas(1080, 1920), { width: 480, height: 864 });
+  assert.deepEqual(estimateH3ReferenceCanvas(1920, 1080), { width: 864, height: 480 });
+  assert.deepEqual(estimateH3ReferenceCanvas(1440, 1080), { width: 640, height: 480 });
+  assert.deepEqual(estimateH3ReferenceCanvas(1080, 1440), { width: 480, height: 640 });
+  assert.deepEqual(estimateH3ReferenceCanvas(1920, 1080, 90), { width: 480, height: 864 });
+  assert.deepEqual(estimateH3ReferenceCanvas(320, 180), { width: 320, height: 192 });
+  assert.equal(estimateH3ReferenceCanvas(0, 1080), undefined);
+});
+
+test("prepared reference receipts retain the auditable preprocessing contract", () => {
+  const id = "9".repeat(32);
+  const preprocessing = {
+    algorithm_version: "h3-reference-low-token/v1",
+    source: { width: 1920, height: 1080 },
+    output: { canvas_width: 864, canvas_height: 480, truncated: true },
+  };
+  assert.deepEqual(remoteDerivationToResult({
+    id, kind: "video", display_name: "prepared.mp4",
+    preview_url: `/api/derivations/${id}/content`, preprocessing,
+  })?.preprocessing, preprocessing);
+});
+
+test("H3 reference preprocessing polls durable progress and returns the completed receipt", async () => {
+  const originalFetch = globalThis.fetch;
+  const taskId = "8".repeat(32);
+  const receiptId = "9".repeat(32);
+  const progress = [];
+  globalThis.fetch = async (input, init = {}) => {
+    const path = String(input);
+    if (path === "/api/media/derive" && init.method === "POST") {
+      assert.equal(JSON.parse(String(init.body)).background, true);
+      return Response.json({ task_id: taskId, status: "queued", progress: 0 }, { status: 202 });
+    }
+    if (path === `/api/media-tasks/${taskId}`) {
+      return Response.json({
+        task_id: taskId, status: "completed", progress: 100,
+        receipt: { id: receiptId, kind: "video", display_name: "prepared.mp4", preview_url: `/api/derivations/${receiptId}/content`, media: { width: 480, height: 864 } },
+      });
+    }
+    throw new Error(`unexpected fetch ${path}`);
+  };
+  try {
+    const result = await deriveLibraryMedia(
+      { type: "asset", asset_id: "7".repeat(32) },
+      { operation: "prepare_h3_reference", preset: "h3-low-token", audio: "remove" },
+      { onProgress: (value, status) => progress.push([value, status]), pollIntervalMs: 1 },
+    );
+    assert.equal(result.id, receiptId);
+    assert.deepEqual(progress, [[100, "completed"]]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("aborting H3 reference preprocessing requests remote cancellation", async () => {
+  const originalFetch = globalThis.fetch;
+  const taskId = "8".repeat(32);
+  let canceled = 0;
+  globalThis.fetch = async (input, init = {}) => {
+    const path = String(input);
+    if (path === "/api/media/derive") return Response.json({ task_id: taskId, status: "queued" }, { status: 202 });
+    if (path === `/api/media-tasks/${taskId}/cancel` && init.method === "POST") {
+      canceled += 1;
+      return Response.json({ task_id: taskId, status: "cancelling" }, { status: 202 });
+    }
+    throw new Error(`unexpected fetch ${path}`);
+  };
+  const controller = new AbortController();
+  controller.abort();
+  try {
+    await assert.rejects(
+      deriveLibraryMedia(
+        { type: "asset", asset_id: "7".repeat(32) },
+        { operation: "prepare_h3_reference", preset: "h3-low-token", audio: "remove" },
+        { signal: controller.signal },
+      ),
+      /取消/,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(canceled, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });

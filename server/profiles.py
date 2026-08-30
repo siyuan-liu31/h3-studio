@@ -49,6 +49,7 @@ class WorkflowProfile:
     compiler: str
     sampling_mode: str = "default"
     model_bindings: dict[str, str] = field(default_factory=dict)
+    resume: dict[str, Any] = field(default_factory=dict)
     built_in: bool = False
     license_id: str = ""
     license_url: str = ""
@@ -70,6 +71,8 @@ class WorkflowProfile:
             "sampling_mode": self.sampling_mode,
             "model_bindings": self.model_bindings,
         }
+        if self.resume:
+            canonical["resume"] = self.resume
         # Optional descriptive metadata participates in a profile identity only
         # when it exists. This preserves every pre-license profile digest and
         # keeps previously persisted jobs/projects valid across the upgrade.
@@ -127,6 +130,7 @@ class WorkflowProfile:
             "license_url": self.license_url or None,
             "use_notice": self.use_notice or None,
             "reference_contract": reference_contract,
+            "resume": self.resume or {"supported": False, "reason": "profile_not_tested"},
             "manifest_sha256": self.digest(),
         }
 
@@ -137,6 +141,7 @@ VIDEO_SHARED = (
     "RandomNoise", "BasicGuider", "KSamplerSelect", "BasicScheduler",
     "SamplerCustomAdvanced", "VAEDecode", "VAEDecodeAudio", "CreateVideo", "SaveVideo",
 )
+VIDEO_RESUME_NODES = ("SplitSigmas", "SaveLatent", "LoadLatent", "DisableNoise")
 IMAGE_SHARED = ("CheckpointLoaderSimple", "CLIPTextEncode", "KSampler", "VAEDecode", "SaveImage")
 FLOW_IMAGE_SHARED = (
     "UNETLoader", "CLIPLoader", "VAELoader", "ModelSamplingAuraFlow",
@@ -325,13 +330,14 @@ BUILTIN_PROFILES = (
         limits={"duration": [5, H3_MAX_DURATION_SECONDS], "references": 2, "steps": [4, 50], "lora_strength": [0, 2], "denoise": [0.05, 1]}, compiler="h3_fl", sampling_mode="turbo4",
     ),
     _profile(
-        id="minimax-h3-fl2va-base", version="1.0", display_name="MiniMax H3 FL2VA · Base 20 (no Turbo)",
+        id="minimax-h3-fl2va-base", version="1.1", display_name="MiniMax H3 FL2VA · Base 20 (no Turbo)",
         output_type="video", input_modalities=("text", "image"),
-        required_nodes=VIDEO_SHARED + ("MiniMaxH3ImageToVideo", "LoadImage"),
+        required_nodes=VIDEO_SHARED + VIDEO_RESUME_NODES + ("MiniMaxH3ImageToVideo", "LoadImage"),
         required_models=("fl_model", "text_encoder", "video_vae", "audio_vae"),
         parameter_schema={"duration": "number", "width": "integer", "height": "integer", "steps": "integer", "denoise": "number", "seed": "integer"},
         defaults={"duration": 124 / 24, "steps": 20, "denoise": 1.0},
         limits={"duration": [5, H3_MAX_DURATION_SECONDS], "references": 2, "steps": [4, 50], "denoise": [0.05, 1]}, compiler="h3_fl", sampling_mode="base",
+        resume={"supported": True, "schedule_version": "h3-simple-fixed/v1", "max_total_steps": 50, "additional_steps": [1, 46]},
     ),
     _profile(
         id="minimax-h3-ref2va", version="1.2", display_name="MiniMax H3 Ref2VA · Turbo LoRA（4 步推荐）",
@@ -343,13 +349,14 @@ BUILTIN_PROFILES = (
         limits={"duration": [5, H3_MAX_DURATION_SECONDS], "references": 6, "steps": [4, 50], "lora_strength": [0, 2], "denoise": [0.05, 1]}, compiler="h3_ref", sampling_mode="turbo4",
     ),
     _profile(
-        id="minimax-h3-ref2va-base", version="1.0", display_name="MiniMax H3 Ref2VA · Base 20 (no Turbo)",
+        id="minimax-h3-ref2va-base", version="1.1", display_name="MiniMax H3 Ref2VA · Base 20 (no Turbo)",
         output_type="video", input_modalities=("text", "image", "video", "audio"),
-        required_nodes=VIDEO_SHARED + ("MiniMaxH3ReferenceToVideo", "LoadImage", "LoadVideo", "LoadAudio", "GetVideoComponents"),
+        required_nodes=VIDEO_SHARED + VIDEO_RESUME_NODES + ("MiniMaxH3ReferenceToVideo", "LoadImage", "LoadVideo", "LoadAudio", "GetVideoComponents"),
         required_models=("ref_model", "text_encoder", "video_vae", "audio_vae"),
         parameter_schema={"duration": "number", "width": "integer", "height": "integer", "steps": "integer", "ref_image_size": "string", "denoise": "number", "seed": "integer"},
         defaults={"duration": 124 / 24, "steps": 20, "ref_image_size": "match", "denoise": 1.0},
         limits={"duration": [5, H3_MAX_DURATION_SECONDS], "references": 6, "steps": [4, 50], "denoise": [0.05, 1]}, compiler="h3_ref", sampling_mode="base",
+        resume={"supported": True, "schedule_version": "h3-simple-fixed/v1", "max_total_steps": 50, "additional_steps": [1, 46]},
     ),
     _profile(
         id="z-image-turbo-bf16-t2i", version="1.0",
@@ -713,6 +720,30 @@ def _validate_manifest(value: Any, source: str) -> WorkflowProfile:
         path = PurePosixPath(name)
         if not name or len(name) > 240 or path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts) or "\\" in name or any(ord(char) < 32 for char in name):
             raise ApiError(500, "profile_invalid", f"profile {source} has an unsafe binding for {role}")
+    resume = value.get("resume", {})
+    if not isinstance(resume, dict):
+        raise ApiError(500, "profile_invalid", f"profile {source} has an invalid resume declaration")
+    if resume:
+        supported = resume.get("supported") is True
+        allowed_resume_keys = {"supported", "schedule_version", "max_total_steps", "additional_steps", "reason"}
+        if set(resume) - allowed_resume_keys:
+            raise ApiError(500, "profile_invalid", f"profile {source} has unsupported resume fields")
+        if supported:
+            maximum = resume.get("max_total_steps")
+            additional = resume.get("additional_steps")
+            step_limits = limits.get("steps")
+            if (
+                not compiler.startswith("h3_") or sampling_mode != "base"
+                or resume.get("schedule_version") != "h3-simple-fixed/v1"
+                or not isinstance(maximum, int) or isinstance(maximum, bool)
+                or not isinstance(additional, list) or len(additional) != 2
+                or any(not isinstance(item, int) or isinstance(item, bool) for item in additional)
+                or not isinstance(step_limits, list) or maximum != int(step_limits[1])
+                or additional[0] < 1 or additional[0] > additional[1]
+                or additional[1] > maximum - int(step_limits[0])
+            ):
+                raise ApiError(500, "profile_invalid", f"profile {source} has an unsafe resume policy")
+            nodes = list(dict.fromkeys((*nodes, *VIDEO_RESUME_NODES)))
     modalities = list(dict.fromkeys((*baseline["modalities"], *modalities)))
     nodes = list(dict.fromkeys((*baseline["nodes"], *nodes)))
     models = list(dict.fromkeys((*baseline["models"], *models)))
@@ -734,7 +765,7 @@ def _validate_manifest(value: Any, source: str) -> WorkflowProfile:
         output_type=output, input_modalities=tuple(modalities), required_nodes=tuple(nodes),
         required_models=tuple(models), parameter_schema=schema, defaults=defaults,
         limits=limits, compiler=compiler, sampling_mode=sampling_mode,
-        model_bindings=dict(bindings), built_in=False, **license_fields,
+        model_bindings=dict(bindings), resume=dict(resume), built_in=False, **license_fields,
     )
 
 

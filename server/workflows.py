@@ -140,6 +140,27 @@ class GenerationSpec:
         return value
 
 
+@dataclass(frozen=True, slots=True)
+class ResumeSamplingPlan:
+    mode: str
+    max_total_steps: int
+    steps_before: int = 0
+    additional_steps: int = 0
+    checkpoint_input: str = ""
+
+    def __post_init__(self) -> None:
+        if self.mode not in {"initial", "resume"}:
+            raise ValueError("resume sampling mode must be initial or resume")
+        if self.max_total_steps <= 0:
+            raise ValueError("max_total_steps must be positive")
+        if self.mode == "resume" and (
+            self.steps_before <= 0 or self.additional_steps <= 0
+            or self.steps_before + self.additional_steps > self.max_total_steps
+            or not self.checkpoint_input
+        ):
+            raise ValueError("resume sampling plan is incomplete")
+
+
 def h3_frame_count(duration_seconds: float) -> int:
     """Snap to H3's 17k+5 grid without exceeding the supported output limit."""
     candidate = 5 + 17 * max(0, math.ceil((duration_seconds * 24 - 5) / 17))
@@ -1306,7 +1327,10 @@ def parse_generation_request(
     )
 
 
-def compile_video_workflow(spec: GenerationSpec, config: Config, job_id: str) -> dict[str, Any]:
+def compile_video_workflow(
+    spec: GenerationSpec, config: Config, job_id: str,
+    resume_plan: ResumeSamplingPlan | None = None,
+) -> dict[str, Any]:
     if spec.output_type != "video":
         raise ValueError("video spec required")
     if spec.director_mode in {"v2v", "rv2v"}:
@@ -1351,7 +1375,7 @@ def compile_video_workflow(spec: GenerationSpec, config: Config, job_id: str) ->
         "11": {"class_type": "KSamplerSelect", "inputs": {"sampler_name": spec.sampler or "sa_solver"}},
         "12": {
             "class_type": "BasicScheduler",
-            "inputs": {"model": ["4" if spec.sampling_mode == "turbo4" else "3", 0], "scheduler": spec.scheduler or "simple", "steps": spec.steps, "denoise": spec.denoise},
+            "inputs": {"model": ["4" if spec.sampling_mode == "turbo4" else "3", 0], "scheduler": spec.scheduler or "simple", "steps": resume_plan.max_total_steps if resume_plan else spec.steps, "denoise": spec.denoise},
         },
         "13": {
             "class_type": "SamplerCustomAdvanced",
@@ -1390,6 +1414,35 @@ def compile_video_workflow(spec: GenerationSpec, config: Config, job_id: str) ->
                 "lora_name": model("ref_lora") if reference_mode else model("fl_lora"),
                 "strength_model": spec.lora_strength,
             },
+        }
+
+    if resume_plan is not None:
+        # Output 0 is the current sampler state required for true continuation;
+        # output 1 is the denoised estimate suitable for the user-facing preview.
+        workflow["14"]["inputs"]["samples"] = ["13", 1]
+        workflow["15"]["inputs"]["samples"] = ["13", 1]
+        workflow["18"] = {
+            "class_type": "SplitSigmas",
+            "inputs": {"sigmas": ["12", 0], "step": spec.steps if resume_plan.mode == "initial" else resume_plan.steps_before},
+        }
+        if resume_plan.mode == "initial":
+            workflow["13"]["inputs"]["sigmas"] = ["18", 0]
+        else:
+            workflow["9"] = {"class_type": "DisableNoise", "inputs": {}}
+            workflow["20"] = {
+                "class_type": "SplitSigmas",
+                "inputs": {"sigmas": ["18", 1], "step": resume_plan.additional_steps},
+            }
+            workflow["21"] = {
+                "class_type": "LoadLatent",
+                "inputs": {"latent": resume_plan.checkpoint_input},
+            }
+            workflow["13"]["inputs"].update({
+                "noise": ["9", 0], "sigmas": ["20", 0], "latent_image": ["21", 0],
+            })
+        workflow["19"] = {
+            "class_type": "SaveLatent",
+            "inputs": {"samples": ["13", 0], "filename_prefix": f"h3-studio/checkpoints/{job_id}"},
         }
 
     conditioning: dict[str, Any]
@@ -1826,7 +1879,10 @@ def compile_flux2_klein_workflow(spec: GenerationSpec, job_id: str) -> dict[str,
     return workflow
 
 
-def compile_workflow(spec: GenerationSpec, config: Config, job_id: str) -> dict[str, Any]:
+def compile_workflow(
+    spec: GenerationSpec, config: Config, job_id: str,
+    resume_plan: ResumeSamplingPlan | None = None,
+) -> dict[str, Any]:
     if spec.compiler not in {
         "h3_fl", "h3_ref", "checkpoint_t2i", "checkpoint_img2img",
         "z_image_t2i", "z_image_img2img", "z_image_lora_t2i", "z_image_lora_img2img",
@@ -1834,7 +1890,7 @@ def compile_workflow(spec: GenerationSpec, config: Config, job_id: str) -> dict[
     }:
         raise CapabilityError("workflow profile selected an unsupported compiler")
     if spec.compiler in {"h3_fl", "h3_ref"}:
-        return compile_video_workflow(spec, config, job_id)
+        return compile_video_workflow(spec, config, job_id, resume_plan)
     if spec.compiler == "z_image_t2i":
         return compile_z_image_workflow(spec, job_id)
     if spec.compiler == "z_image_img2img":
@@ -1870,6 +1926,10 @@ def workflow_evidence(workflow: dict[str, Any], spec: GenerationSpec, job_id: st
     sampler_select = node_inputs("KSamplerSelect")
     ksampler = node_inputs("KSampler")
     random_noise = node_inputs("RandomNoise")
+    split_sigmas = [
+        node.get("inputs", {}) for node in workflow.values()
+        if isinstance(node, dict) and node.get("class_type") == "SplitSigmas"
+    ]
     h3_conditioning = node_inputs("MiniMaxH3ReferenceToVideo") or node_inputs("MiniMaxH3ImageToVideo")
     compiled_prompt = h3_conditioning.get("prompt")
     if not isinstance(compiled_prompt, str) and spec.output_type == "image":
@@ -1898,7 +1958,8 @@ def workflow_evidence(workflow: dict[str, Any], spec: GenerationSpec, job_id: st
         "lora_strength": lora.get("strength_model", 0),
         "image_lora": lora.get("lora_name") if spec.output_type == "image" else None,
         "image_lora_strength": lora.get("strength_model", 0) if spec.output_type == "image" else None,
-        "steps": basic_scheduler.get("steps", flux2_scheduler.get("steps", ksampler.get("steps", spec.steps))),
+        "steps": spec.steps if node_inputs("SaveLatent") else basic_scheduler.get("steps", flux2_scheduler.get("steps", ksampler.get("steps", spec.steps))),
+        "scheduler_total_steps": basic_scheduler.get("steps") if node_inputs("SaveLatent") else None,
         "sampler": sampler_select.get("sampler_name", ksampler.get("sampler_name", spec.sampler)),
         "scheduler": basic_scheduler.get("scheduler", "flux2" if flux2_scheduler else ksampler.get("scheduler", spec.scheduler)),
         "denoise": None if spec.compiler == "flux2_klein" else basic_scheduler.get("denoise", ksampler.get("denoise", spec.denoise)),
@@ -1909,4 +1970,7 @@ def workflow_evidence(workflow: dict[str, Any], spec: GenerationSpec, job_id: st
         "prompt_sha256": prompt_sha256,
         "guidance": "BasicGuider" if spec.output_type == "video" else None,
         "sigma_shifts": {"video": 12.0, "audio": 3.0} if spec.output_type == "video" else None,
+        "resumable_sampling": bool(node_inputs("SaveLatent")),
+        "resume_from_checkpoint": bool(node_inputs("LoadLatent")),
+        "sigma_splits": [item.get("step") for item in split_sigmas if isinstance(item, dict)],
     }

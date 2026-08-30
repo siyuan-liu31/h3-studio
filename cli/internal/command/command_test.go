@@ -217,6 +217,107 @@ func TestMediaEndpointsUsesFirstAndLast(t *testing.T) {
 	}
 }
 
+func TestPrepareReferenceCommandUsesServerDerivationAndReturnsLocator(t *testing.T) {
+	var payload map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/media/derive" {
+			t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+		_ = json.NewDecoder(r.Body).Decode(&payload)
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": testMediaID, "preprocessing": map[string]any{"algorithm_version": "h3-reference-low-token/v1"}})
+	}))
+	defer server.Close()
+	code, out, stderr := executeTest(t, []string{"--server", server.URL, "--json", "media", "prepare-reference", "asset:" + testAssetID, "--preset", "h3-low-token"}, "")
+	if code != 0 || stderr != "" {
+		t.Fatalf("code=%d out=%s stderr=%s", code, out, stderr)
+	}
+	if payload["operation"] != "prepare_h3_reference" || payload["preset"] != "h3-low-token" || payload["fps"] != float64(24) {
+		t.Fatalf("payload=%v", payload)
+	}
+	if !strings.Contains(out, "media:"+testMediaID) {
+		t.Fatalf("locator missing from output: %s", out)
+	}
+}
+
+func TestPrepareReferenceCommandStreamsBackgroundProgress(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/api/media/derive":
+			w.WriteHeader(http.StatusAccepted)
+			_ = json.NewEncoder(w).Encode(map[string]any{"task_id": testJobID, "status": "queued", "progress": 0})
+		case r.Method == http.MethodGet && r.URL.Path == "/api/media-tasks/"+testJobID:
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"task_id": testJobID, "status": "completed", "progress": 100,
+				"receipt": map[string]any{"id": testMediaID, "receipt_id": testMediaID, "kind": "video"},
+			})
+		default:
+			t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	code, out, stderr := executeTest(t, []string{"--server", server.URL, "--output", "jsonl", "media", "prepare-reference", "asset:" + testAssetID, "--preset", "h3-low-token"}, "")
+	if code != 0 || stderr != "" {
+		t.Fatalf("code=%d out=%s stderr=%s", code, out, stderr)
+	}
+	if !strings.Contains(out, `"type":"media_submitted"`) || !strings.Contains(out, `"type":"media_progress"`) || !strings.Contains(out, "media:"+testMediaID) {
+		t.Fatalf("background progress or locator missing: %s", out)
+	}
+}
+
+func TestPrepareReferenceCommandRejectsUnsafeParametersBeforeNetwork(t *testing.T) {
+	for _, args := range [][]string{
+		{"media", "prepare-reference", "asset:" + testAssetID},
+		{"media", "prepare-reference", "asset:" + testAssetID, "--audio", "guess"},
+		{"media", "prepare-reference", "asset:" + testAssetID, "--audio", "remove", "--fps", "30"},
+	} {
+		code, _, _ := executeTest(t, append(args, "--json"), "")
+		if code != 2 {
+			t.Fatalf("args=%v code=%d", args, code)
+		}
+	}
+}
+
+func TestResumeCommandWaitsAndDownloadsContinuedResult(t *testing.T) {
+	var payload map[string]any
+	destination := filepath.Join(t.TempDir(), "continued.mp4")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/api/jobs/"+testJobID+"/resume":
+			_ = json.NewDecoder(r.Body).Decode(&payload)
+			w.WriteHeader(http.StatusAccepted)
+			_ = json.NewEncoder(w).Encode(map[string]any{"job_id": testMediaID, "steps_before": 7, "steps_after": 10})
+		case r.Method == http.MethodGet && r.URL.Path == "/api/status":
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": testMediaID, "status": "completed", "output_type": "video"})
+		case r.Method == http.MethodGet && r.URL.Path == "/api/download":
+			_, _ = io.WriteString(w, "continued-video")
+		default:
+			t.Fatalf("unexpected %s %s", r.Method, r.URL.String())
+		}
+	}))
+	defer server.Close()
+	code, _, stderr := executeTest(t, []string{"--server", server.URL, "job", "resume", testJobID, "--additional-steps", "3", "--wait", "--poll-interval", "1ms", "--download", destination}, "")
+	if code != 0 {
+		t.Fatalf("code=%d stderr=%s", code, stderr)
+	}
+	if payload["additional_steps"] != float64(3) || len(payload["request_id"].(string)) != 32 {
+		t.Fatalf("payload=%v", payload)
+	}
+	content, err := os.ReadFile(destination)
+	if err != nil || string(content) != "continued-video" {
+		t.Fatalf("download=%q err=%v", content, err)
+	}
+}
+
+func TestResumeCommandRejectsNonPositiveSteps(t *testing.T) {
+	for _, value := range []string{"0", "-1"} {
+		code, _, _ := executeTest(t, []string{"job", "resume", testJobID, "--additional-steps", value, "--json"}, "")
+		if code != 2 {
+			t.Fatalf("value=%s code=%d", value, code)
+		}
+	}
+}
+
 func TestHelpIncludesAgentContracts(t *testing.T) {
 	code, out, _ := executeTest(t, []string{"generate", "video", "--help"}, "")
 	if code != 0 || !strings.Contains(out, "--source-video") || !strings.Contains(out, "Ctrl-C") {
@@ -570,8 +671,8 @@ func TestConnectionDecisionCoversEveryRemoteCommandAction(t *testing.T) {
 		"profile":    {"list", "show"},
 		"asset":      {"upload", "download", "list", "get", "copy", "update", "pin", "delete"},
 		"generate":   {"image", "video"},
-		"job":        {"list", "get", "wait", "cancel", "download", "save", "workflow", "delete"},
-		"media":      {"frame", "endpoints", "trim", "extract-audio", "remove-audio", "list", "get", "download", "save", "delete"},
+		"job":        {"list", "get", "wait", "resume", "cancel", "download", "save", "workflow", "delete"},
+		"media":      {"frame", "endpoints", "trim", "extract-audio", "remove-audio", "prepare-reference", "list", "get", "download", "save", "delete"},
 		"project":    {"list", "create", "apply", "get", "delete", "run", "wait", "stop", "rerun", "merge", "download"},
 	}
 	if len(networkCommandActions) != len(actions) {

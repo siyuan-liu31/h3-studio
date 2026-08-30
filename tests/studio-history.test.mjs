@@ -13,6 +13,7 @@ import {
   parseJobHistoryCache,
   parseJobHistoryCacheEnvelope,
   rebaseStudioJobMedia,
+  resumeGenerationJob,
   serializeJobHistoryCache,
   serverJobToStudioJob,
 } from "../app/studio-history.ts";
@@ -38,6 +39,42 @@ test("job history updates an existing task in place and preserves its result", (
   });
 
   assert.deepEqual(mergeJobHistory([queued, unrelated], completed), [completed, unrelated]);
+});
+
+test("resume state is hydrated from the durable server receipt", () => {
+  const id = "a".repeat(32);
+  const parsed = serverJobToStudioJob({
+    id, status: "completed", output_type: "video",
+    resume: { supported: true, can_resume: true, current_steps: 7, max_total_steps: 50, latest_job_id: id },
+  });
+  assert.equal(parsed?.resume?.can_resume, true);
+  assert.equal(parsed?.resume?.current_steps, 7);
+  assert.equal(parsed?.resume?.max_total_steps, 50);
+});
+
+test("resume client submits an idempotent positive step request and rejects invalid input locally", async () => {
+  const sourceId = "b".repeat(32);
+  const childId = "c".repeat(32);
+  const previousFetch = globalThis.fetch;
+  let request;
+  globalThis.fetch = async (url, init) => {
+    request = { url, init };
+    return new Response(JSON.stringify({ job_id: childId, steps_before: 7, steps_after: 10 }), {
+      status: 202, headers: { "Content-Type": "application/json" },
+    });
+  };
+  try {
+    const result = await resumeGenerationJob(sourceId, 3);
+    assert.equal(result.job_id, childId);
+    assert.equal(request.url, `/api/jobs/${sourceId}/resume`);
+    const body = JSON.parse(request.init.body);
+    assert.equal(body.additional_steps, 3);
+    assert.match(body.request_id, /^[0-9a-f]{32}$/);
+    await assert.rejects(() => resumeGenerationJob("bad", 3), /任务 ID 无效/);
+    await assert.rejects(() => resumeGenerationJob(sourceId, 0), /正整数/);
+  } finally {
+    globalThis.fetch = previousFetch;
+  }
 });
 
 test("job history is newest-first and bounded without admitting id-less drafts", () => {

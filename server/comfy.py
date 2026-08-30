@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import threading
 import time
 import urllib.error
@@ -65,6 +66,39 @@ class ComfyClient:
     def health(self) -> dict[str, Any]:
         value = self.request("/system_stats", timeout=5)
         return value if isinstance(value, dict) else {}
+
+    def execution_environment(self, config: Config) -> dict[str, str]:
+        """Return auditable accelerator/attention facts for safety policies."""
+
+        architecture = config.gpu_architecture
+        if architecture.lower() == "auto":
+            stats = self.health()
+            candidates: list[str] = []
+
+            def visit(value: Any, key: str = "") -> None:
+                if isinstance(value, dict):
+                    for child_key, child in value.items():
+                        visit(child, str(child_key))
+                elif isinstance(value, list):
+                    for child in value:
+                        visit(child, key)
+                elif any(marker in key.lower() for marker in ("architecture", "compute_capability", "cuda_capability", "device_name")):
+                    candidates.append(str(value))
+                elif key.lower() == "name" and isinstance(value, str) and any(
+                    marker in value.lower() for marker in ("rtx 50", "rtx pro 6000 blackwell", "blackwell")
+                ):
+                    # Current ComfyUI system_stats exposes an RTX 5090 only as
+                    # devices[].name, without CUDA compute capability.
+                    candidates.append(value)
+
+            visit(stats)
+            architecture = " ".join(candidates) if candidates else "unknown"
+            if re.search(r"\bRTX\s+50\d{2}\b", architecture, re.IGNORECASE) or "blackwell" in architecture.lower():
+                architecture = f"sm120 Blackwell ({architecture})"
+        return {
+            "gpu_architecture": architecture,
+            "attention_backend": config.attention_backend,
+        }
 
     @staticmethod
     def _queue_busy(queue: dict[str, Any]) -> bool:

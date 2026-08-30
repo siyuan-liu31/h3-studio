@@ -20,6 +20,7 @@ const JobHelp = `Usage: h3ctl job COMMAND
   list [--limit 20] [--cursor CURSOR] [--results]
   get JOB
   wait JOB [--timeout 0] [--poll-interval 5s]
+  resume JOB --additional-steps N [--wait] [--download PATH] [--force]
   cancel JOB
   download JOB [--index 0] --to PATH [--force]
   save JOB [--index 0] [--name TEXT] [--folder ID]
@@ -30,6 +31,7 @@ JOB may be a bare ID or job:ID#INDEX. Waiting uses short polling requests;
 Ctrl-C stops only the local wait and never cancels the remote generation.
 Defaults: index=0, limit=20, timeout=0, poll-interval=5s, overwrite disabled.
 Example: h3ctl job wait job:ID --timeout 2h --poll-interval 5s
+         h3ctl job resume job:ID --additional-steps 3 --wait --download continued.mp4
 `
 
 func (r *Runner) runJob(ctx context.Context, args []string) (any, error) {
@@ -39,6 +41,50 @@ func (r *Runner) runJob(ctx context.Context, args []string) (any, error) {
 	}
 	action := args[0]
 	switch action {
+	case "resume":
+		set := newFlags("job resume")
+		additional := set.Int("additional-steps", 0, "")
+		wait := set.Bool("wait", false, "")
+		download := set.String("download", "", "")
+		force := set.Bool("force", false, "")
+		timeout := set.Duration("wait-timeout", 0, "")
+		poll := set.Duration("poll-interval", 5*time.Second, "")
+		if err := parseFlags(set, args[1:]); err != nil {
+			return nil, usage("%v", err)
+		}
+		if set.NArg() != 1 || *additional <= 0 {
+			return nil, usage("job resume requires JOB and positive --additional-steps")
+		}
+		if *timeout < 0 || *poll <= 0 {
+			return nil, usage("--wait-timeout cannot be negative and --poll-interval must be positive")
+		}
+		id, _, err := jobID(set.Arg(0))
+		if err != nil {
+			return nil, err
+		}
+		submitted, err := r.Service.Resume(ctx, id, *additional, r.Globals.RequestID)
+		if err != nil {
+			return nil, err
+		}
+		newID, _ := submitted["job_id"].(string)
+		result := map[string]any{"submitted": submitted, "job_id": newID, "request_id": submitted["request_id"]}
+		if !*wait && *download == "" {
+			return result, nil
+		}
+		r.Printer.Event(map[string]any{"type": "submitted", "job_id": newID, "request_id": submitted["request_id"], "submission": submitted})
+		completed, err := r.Service.Wait(ctx, newID, operation.WaitOptions{Timeout: *timeout, PollInterval: *poll, OnEvent: r.Printer.Event})
+		if err != nil {
+			return nil, err
+		}
+		result["completed"] = completed
+		if *download != "" {
+			downloaded, err := r.Service.API.Download(ctx, "/api/download?id="+url.QueryEscape(newID)+"&index=0", *download, *force)
+			if err != nil {
+				return nil, err
+			}
+			result["download"] = downloaded
+		}
+		return result, nil
 	case "list":
 		set := newFlags("job list")
 		limit := set.Int("limit", 20, "")

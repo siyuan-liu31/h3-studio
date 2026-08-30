@@ -48,6 +48,12 @@ def make_config(root: Path) -> Config:
 
 
 class ConfigSecurityTests(unittest.TestCase):
+    def test_checkpoint_ttl_is_bounded_to_the_supported_recovery_window(self) -> None:
+        for value in ("23", "73"):
+            with self.subTest(value=value), patch.dict(os.environ, {"H3_STUDIO_CHECKPOINT_TTL_HOURS": value}, clear=True):
+                with self.assertRaisesRegex(ValueError, "CHECKPOINT_TTL_HOURS"):
+                    Config.from_env()
+
     def test_default_origins_are_local_gateway_origins(self) -> None:
         with patch.dict(os.environ, {}, clear=True):
             config = Config.from_env()

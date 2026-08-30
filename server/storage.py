@@ -249,7 +249,7 @@ class AssetStore:
     def _probe_media(path: Path, expected_kind: str) -> dict[str, Any]:
         command = [
             "ffprobe", "-v", "error", "-show_entries",
-            "format=duration,format_name:stream=index,codec_type,codec_name,width,height,duration,avg_frame_rate,r_frame_rate,nb_frames,sample_rate,channels",
+            "format=duration,format_name:stream=index,codec_type,codec_name,pix_fmt,width,height,duration,avg_frame_rate,r_frame_rate,nb_frames,sample_rate,channels:stream_tags=rotate:stream_side_data=rotation",
             "-of", "json", str(path),
         ]
         try:
@@ -290,17 +290,35 @@ class AssetStore:
             video_duration = float(video.get("duration", 0) or 0) if video else 0.0
         except (TypeError, ValueError):
             video_duration = 0.0
+        rotation = 0
+        if video:
+            tags = video.get("tags") if isinstance(video.get("tags"), dict) else {}
+            raw_rotation: Any = tags.get("rotate", 0)
+            side_data = video.get("side_data_list")
+            if isinstance(side_data, list):
+                rotated = next(
+                    (item.get("rotation") for item in side_data if isinstance(item, dict) and item.get("rotation") is not None),
+                    None,
+                )
+                if rotated is not None:
+                    raw_rotation = rotated
+            try:
+                rotation = int(round(float(raw_rotation))) % 360
+            except (TypeError, ValueError, OverflowError):
+                rotation = 0
         return {
             "duration": round(duration, 3),
             "video_duration": round(video_duration, 3) if video_duration > 0 else None,
             "has_video": video is not None,
             "has_audio": audio is not None,
             "video_codec": video.get("codec_name") if video else None,
+            "pixel_format": video.get("pix_fmt") if video else None,
             "audio_codec": audio.get("codec_name") if audio else None,
             "sample_rate": int(audio.get("sample_rate", 0) or 0) if audio else None,
             "channels": int(audio.get("channels", 0) or 0) if audio else None,
             "width": int(video.get("width", 0)) if video else None,
             "height": int(video.get("height", 0)) if video else None,
+            "rotation": rotation if video else None,
             "fps": round(rate(video), 6) if video else None,
             "frame_count": int(video.get("nb_frames", 0) or 0) if video else None,
         }

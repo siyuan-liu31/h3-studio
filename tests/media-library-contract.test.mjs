@@ -62,7 +62,9 @@ test("result and derivative nodes can be edited directly while receipts stay in 
   assert.match(library, /export type MediaDeriveSource/);
   assert.match(library, /type: "job"; job_id: string/);
   assert.match(library, /type: "derivation"; receipt_id: string/);
-  assert.match(library, /body: JSON\.stringify\(\{ source, \.\.\.request \}\)/);
+  assert.match(library, /body: JSON\.stringify\(\{ source, \.\.\.request,[\s\S]*background: true/);
+  assert.match(library, /\/api\/media-tasks\/\$\{encodeURIComponent\(taskId\)\}/);
+  assert.match(studio, /取消处理/);
   assert.match(library, /method: "DELETE"/);
   assert.match(studio, /source\?\.sourceJobId[\s\S]*type: "job"/);
   assert.match(studio, /source\?\.derivationId[\s\S]*type: "derivation"/);

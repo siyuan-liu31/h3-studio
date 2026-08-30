@@ -20,6 +20,7 @@ const MediaHelp = `Usage: h3ctl media COMMAND
   trim SOURCE --start SECONDS --end SECONDS [--audio]
   extract-audio SOURCE
   remove-audio SOURCE
+  prepare-reference SOURCE [--preset h3-low-token | controlled sizing flags]
   list
   get MEDIA
   download MEDIA --to PATH [--force]
@@ -31,6 +32,7 @@ Frame, trim, extract-audio, and remove-audio also accept --name TEXT.
 Derivations remain independent receipts until explicitly saved as an asset.
 Defaults: frame position=current; overwrite disabled.
 Example: h3ctl media frame job:ID#0 --position last
+         h3ctl media prepare-reference asset:ID --preset h3-low-token
 `
 
 func (r *Runner) runMedia(ctx context.Context, args []string) (any, error) {
@@ -40,6 +42,57 @@ func (r *Runner) runMedia(ctx context.Context, args []string) (any, error) {
 	}
 	action := args[0]
 	switch action {
+	case "prepare-reference":
+		set := newFlags("media prepare-reference")
+		preset := set.String("preset", "", "")
+		shortEdge := set.Int("max-short-edge", 480, "")
+		longEdge := set.Int("max-long-edge", 864, "")
+		fps := set.Int("fps", 24, "")
+		maxDuration := set.Float64("max-duration", 15, "")
+		audioMode := set.String("audio", "", "")
+		fit := set.String("fit", "contain", "")
+		alignment := set.Int("alignment", 32, "")
+		padMode := set.String("pad-mode", "edge", "")
+		name := set.String("name", "", "")
+		if err := parseFlags(set, args[1:]); err != nil {
+			return nil, usage("%v", err)
+		}
+		if set.NArg() != 1 {
+			return nil, usage("media prepare-reference requires SOURCE")
+		}
+		if *preset != "" && *preset != "h3-low-token" {
+			return nil, usage("--preset must be h3-low-token")
+		}
+		if *audioMode == "" && *preset == "" {
+			return nil, usage("--audio keep|remove is required unless --preset h3-low-token is used")
+		}
+		if *audioMode != "" && *audioMode != "keep" && *audioMode != "remove" {
+			return nil, usage("--audio must be keep or remove")
+		}
+		if *shortEdge <= 0 || *longEdge <= 0 || *shortEdge > *longEdge || *fps != 24 || *maxDuration <= 0 || math.IsNaN(*maxDuration) || math.IsInf(*maxDuration, 0) || *fit != "contain" || *alignment != 32 || *padMode != "edge" {
+			return nil, usage("prepare-reference requires positive aligned H3 sizing, 24 fps, contain fit, and edge padding")
+		}
+		body := map[string]any{
+			"operation": "prepare_h3_reference", "max_short_edge": *shortEdge,
+			"max_long_edge": *longEdge, "fps": *fps, "max_duration": *maxDuration,
+			"fit": *fit, "alignment": *alignment, "pad_mode": *padMode,
+		}
+		if *preset != "" {
+			body["preset"] = *preset
+		}
+		if *audioMode != "" {
+			body["audio"] = *audioMode
+		}
+		if *name != "" {
+			body["display_name"] = *name
+		}
+		value, err := r.Service.DeriveWithEvents(ctx, set.Arg(0), body, r.Printer.Event)
+		if err == nil {
+			if id, ok := value["id"].(string); ok {
+				value["locator"] = "media:" + id
+			}
+		}
+		return value, err
 	case "frame":
 		set := newFlags("media frame")
 		position := set.String("position", "current", "")

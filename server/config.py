@@ -18,6 +18,13 @@ def _integer(name: str, default: int, minimum: int = 1) -> int:
     return value
 
 
+def _bounded_integer(name: str, default: int, minimum: int, maximum: int) -> int:
+    value = _integer(name, default, minimum)
+    if value > maximum:
+        raise ValueError(f"{name} must be <= {maximum}")
+    return value
+
+
 @dataclass(frozen=True, slots=True)
 class Config:
     host: str
@@ -58,6 +65,11 @@ class Config:
     # their lifetime through the global queue and /free endpoint.
     comfy_idle_free_seconds: int = 180
     comfy_idle_poll_seconds: int = 15
+    checkpoint_ttl_hours: int = 48
+    checkpoint_gc_seconds: int = 30 * 60
+    gpu_architecture: str = "auto"
+    attention_backend: str = "SageAttention"
+    h3_token_risk_threshold: int = 150_000
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -152,6 +164,15 @@ class Config:
             comfy_idle_poll_seconds=_integer(
                 "H3_STUDIO_COMFY_IDLE_POLL_SECONDS", 15
             ),
+            checkpoint_ttl_hours=_bounded_integer(
+                "H3_STUDIO_CHECKPOINT_TTL_HOURS", 48, 24, 72
+            ),
+            checkpoint_gc_seconds=_integer(
+                "H3_STUDIO_CHECKPOINT_GC_SECONDS", 30 * 60, minimum=0
+            ),
+            gpu_architecture=os.environ.get("H3_STUDIO_GPU_ARCHITECTURE", "auto").strip() or "auto",
+            attention_backend=os.environ.get("H3_STUDIO_ATTENTION_BACKEND", "SageAttention").strip() or "SageAttention",
+            h3_token_risk_threshold=_integer("H3_STUDIO_H3_TOKEN_RISK_THRESHOLD", 150_000),
         )
 
     def prepare(self) -> None:
@@ -161,7 +182,9 @@ class Config:
             self.data_root / "metadata" / "jobs",
             self.data_root / "metadata" / "asset-folders",
             self.data_root / "metadata" / "derivations",
+            self.data_root / "metadata" / "checkpoints",
             self.data_root / "derivations",
+            self.data_root / "checkpoints",
             self.data_root / "thumbnails",
             self.data_root / "tmp",
             self.comfy_input / "h3-studio",
