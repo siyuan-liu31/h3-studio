@@ -90,5 +90,5 @@ func WriteJSON(w io.Writer, value any) error {
 }
 
 func Unsupported(command, reason string) error {
-	return &CLIError{Code: "unsupported", Message: fmt.Sprintf("%s is not supported by the current H3 Studio API: %s", command, reason)}
+	return &CLIError{Code: "unsupported", Message: fmt.Sprintf("%s is not supported by the current MiniMax H3 Video Studio API: %s", command, reason)}
 }

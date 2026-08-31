@@ -181,7 +181,7 @@ class MediaService:
             completed = subprocess.run(command, capture_output=True, text=True, timeout=timeout, check=False)
         except FileNotFoundError as error:
             destination.unlink(missing_ok=True)
-            raise ApiError(503, "ffmpeg_unavailable", "ffmpeg is unavailable on the H3 Studio server") from error
+            raise ApiError(503, "ffmpeg_unavailable", "ffmpeg is unavailable on the MiniMax H3 Video Studio server") from error
         except (OSError, subprocess.TimeoutExpired) as error:
             destination.unlink(missing_ok=True)
             raise ApiError(422, "media_processing_failed", "ffmpeg could not process the media") from error

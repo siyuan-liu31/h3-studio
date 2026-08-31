@@ -1,8 +1,12 @@
 # Changelog
 
-记录 H3 Studio 面向用户和运维的重要变化。提交明细仍以 Git 为准；这里只保留会影响使用、兼容、数据或部署的内容。
+记录 MiniMax H3 Video Studio 面向用户和运维的重要变化。提交明细仍以 Git 为准；这里只保留会影响使用、兼容、数据或部署的内容。
 
 ## [Unreleased]
+
+### Changed
+
+- 项目对外品牌更名为 `MiniMax H3 Video Studio`，GitHub 默认 README 改为英文并保留中、日文入口；CLI `h3ctl`、`H3_STUDIO_*` 环境变量、数据路径、API 合同和持久化键保持兼容。
 
 ## [0.4.0] - 2026-08-31
 

@@ -1,6 +1,6 @@
-# H3 Studio Go CLI (`h3ctl`)
+# MiniMax H3 Video Studio Go CLI (`h3ctl`)
 
-`h3ctl` is the scriptable client for the existing H3 Studio Python API. It does not compile ComfyUI graphs or read server storage directly. Generation continues on the server when the CLI exits; reconnect with `job wait` using the returned job ID.
+`h3ctl` is the scriptable client for the existing MiniMax H3 Video Studio Python API. It does not compile ComfyUI graphs or read server storage directly. Generation continues on the server when the CLI exits; reconnect with `job wait` using the returned job ID.
 
 ## Build
 
@@ -169,7 +169,7 @@ h3ctl media prepare-reference asset:ID --audio keep --max-duration 15
 
 These call `/api/media/derive` and return derivation receipts. Use `media save` to promote a receipt into the asset library, or `media download` to download it locally.
 
-`media prepare-reference` submits ffmpeg work as a durable background media task on the H3 Studio server, polls its status, and emits `media_submitted` / `media_progress` JSONL events (or human progress on stderr). Pressing Ctrl-C cancels this remote preprocessing task; completed receipts survive client disconnects and can be recovered from the server. It preserves display orientation and aspect ratio, limits the H3 reference canvas to 480/864 edges, aligns it to 32 pixels, produces 24 FPS H.264/YUV420P, and never overwrites the source. Without `--preset h3-low-token`, `--audio keep|remove` is required explicitly. The returned `media:ID` can be passed directly to generation or saved to the asset library.
+`media prepare-reference` submits ffmpeg work as a durable background media task on the MiniMax H3 Video Studio server, polls its status, and emits `media_submitted` / `media_progress` JSONL events (or human progress on stderr). Pressing Ctrl-C cancels this remote preprocessing task; completed receipts survive client disconnects and can be recovered from the server. It preserves display orientation and aspect ratio, limits the H3 reference canvas to 480/864 edges, aligns it to 32 pixels, produces 24 FPS H.264/YUV420P, and never overwrites the source. Without `--preset h3-low-token`, `--audio keep|remove` is required explicitly. The returned `media:ID` can be passed directly to generation or saved to the asset library.
 
 On `sm120 + SageAttention`, the server also evaluates the complete Ref2VA packed sequence before submission. When the configured versioned policy is exceeded, it creates the same controlled derivation automatically and records the original/derived mapping in the job receipt; target resolution, duration, steps, model, and prompt remain unchanged. A preprocessing failure prevents generation submission and returns its stage, request ID, and already-materialized locators.
 

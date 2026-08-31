@@ -1,10 +1,12 @@
-# H3 Studio LLM Wiki
+# MiniMax H3 Video Studio LLM Wiki
 
 > 最后更新：2026-08-31（Asia/Shanghai）。面向后续开发 Agent 的代码地图；具体发布版本以 Git 和开发机 `current` 软链接为准。实现事实优先级：源码与测试 > capability/API 回执 > 本文 > 历史 evidence 文档。
 
 ## 1. 先看这里
 
-H3 Studio 是一个 React/Vinext 前端加 Python 标准库 API 的单机创作工作台。浏览器保存节点画布和多个画布标签；服务端保存资产、任务、派生媒体与长视频项目，并把受约束请求编译为 ComfyUI 工作流。
+MiniMax H3 Video Studio 是一个 React/Vinext 前端加 Python 标准库 API 的单机创作工作台。浏览器保存节点画布和多个画布标签；服务端保存资产、任务、派生媒体与长视频项目，并把受约束请求编译为 ComfyUI 工作流。
+
+品牌名已更新，但兼容标识不变：CLI 仍为 `h3ctl`，环境变量仍使用 `H3_STUDIO_*`，既有 `h3-studio` 数据路径、API 类名与浏览器持久化键不做迁移。
 
 ```text
 Browser :3013

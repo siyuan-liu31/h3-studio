@@ -1,4 +1,4 @@
-"""Remote H3 Studio API end-to-end validation helpers."""
+"""Remote MiniMax H3 Video Studio API end-to-end validation helpers."""
 
 from .scenarios import SCENARIOS, Scenario
 

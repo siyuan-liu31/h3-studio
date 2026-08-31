@@ -1,4 +1,4 @@
-"""Threaded HTTP API for the H3 Studio web client."""
+"""Threaded HTTP API for the MiniMax H3 Video Studio web client."""
 
 from __future__ import annotations
 
@@ -64,7 +64,7 @@ class Runtime:
 
     def __post_init__(self) -> None:
         if "*" in self.config.cors_origins and not self.config.api_key:
-            raise ValueError("wildcard CORS requires a non-empty H3 Studio API key")
+            raise ValueError("wildcard CORS requires a non-empty MiniMax H3 Video Studio API key")
         self.resources = GpuResourceManager(
             self.config.gpu_device_index,
             idle_release_seconds=self.config.gpu_idle_release_seconds,
@@ -1928,7 +1928,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(
                     HTTPStatus.OK,
                     {
-                        "name": "H3 Studio API",
+                        "name": "MiniMax H3 Video Studio API",
                         "version": 1,
                         "endpoints": {
                             "health": "/api/health",
@@ -2007,7 +2007,7 @@ def main() -> None:
     if not config.api_key:
         print("WARNING: H3_STUDIO_API_KEY is empty; API authentication is disabled")
     server = create_server(config)
-    print(f"H3 Studio API listening on http://{config.host}:{config.port}; ComfyUI={config.comfy_url}")
+    print(f"MiniMax H3 Video Studio API listening on http://{config.host}:{config.port}; ComfyUI={config.comfy_url}")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

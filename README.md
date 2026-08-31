@@ -1,272 +1,295 @@
-# H3 Studio
+# MiniMax H3 Video Studio
 
 <p align="center">
-  简体中文 · <a href="README.en.md">English</a> · <a href="README.ja.md">日本語</a>
+  English · <a href="README.zh-CN.md">简体中文</a> · <a href="README.ja.md">日本語</a>
 </p>
 
 <p align="center">
-  <strong>面向本地与远程 ComfyUI 的节点式 MiniMax H3 视觉创作工作台</strong>
+  <a href="https://github.com/siyuan-liu31/minimax-h3-video-studio/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/siyuan-liu31/minimax-h3-video-studio?style=flat-square"></a>
+  <a href="https://github.com/siyuan-liu31/minimax-h3-video-studio/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/siyuan-liu31/minimax-h3-video-studio?style=flat-square"></a>
+  <img alt="ComfyUI local and remote" src="https://img.shields.io/badge/ComfyUI-local%20%2B%20remote-2f80ed?style=flat-square">
+  <img alt="Agent-ready h3ctl" src="https://img.shields.io/badge/h3ctl-Agent--ready-111827?style=flat-square">
 </p>
 
 <p align="center">
-  视频生成 · 图片生成与编辑 · 多模态参考 · 长视频分段续接 · 资产与结果管理
+  <strong>The visual AI video workspace for MiniMax H3 + ComfyUI</strong>
 </p>
 
 <p align="center">
-  <a href="#三步启动">三步启动</a> ·
-  <a href="docs/installation.md">完整安装指南</a> ·
-  <a href="docs/h3-prompt-guide.md">H3 提示词指南</a> ·
-  <a href="docs/long-video.md">长视频说明</a> ·
-  <a href="docs/releasing.md">发布规范</a>
+  Text-to-video · Image-to-video · Reference-to-video · Video-to-video · Storyboards · Long-form workflows
 </p>
 
-H3 Studio 把素材、提示词、模型参数与生成结果组织在一张可持久化画布中。浏览器负责节点编排、参考素材绑定、预览和项目管理；Python 服务负责安全上传、工作流编译、ComfyUI 队列、结果下载与恢复。画布会自动保存，可以同时维护多个独立工作流。
+<p align="center">
+  <a href="#start-in-three-steps">Start in three steps</a> ·
+  <a href="docs/installation.md">Installation guide</a> ·
+  <a href="docs/h3-prompt-guide.md">H3 prompt guide</a> ·
+  <a href="docs/long-video.md">Long video guide</a> ·
+  <a href="docs/releasing.md">Release policy</a>
+</p>
 
-> 以下界面截图使用经用户授权公开的演示素材，仅用于说明功能；仓库不包含对应的原始素材、模型权重或生成视频文件。
+MiniMax H3 Video Studio is a self-hosted visual workspace for creating AI videos with MiniMax H3 and local or remote ComfyUI. It combines a persistent node canvas, multimodal references, seven generation modes, long-form storyboards, resumable sampling, asset management, and an Agent-friendly Go CLI in one auditable workflow.
+
+> MiniMax H3 Video Studio is an independent community project. It is not affiliated with or endorsed by MiniMax or ComfyUI.
+
+> The screenshots below use demo media approved by the user for public display. The repository does not include the original media, model weights, or generated video files.
 
 <p align="center">
-  <img src="docs/assets/readme/canvas-workflow.png" width="100%" alt="H3 Studio 节点画布示例：参考图、H3 视频节点和输出节点组成生成工作流">
+  <img src="docs/assets/readme/canvas-workflow.png" width="100%" alt="MiniMax H3 Video Studio node canvas with an image reference, an H3 video node, and an output node">
 </p>
 
 ```mermaid
 flowchart LR
-  P[图片参考] --> V[H3 视频节点]
-  M[视频 / 音频参考] --> V
-  P --> I[图片生成节点]
-  V --> O[输出节点]
+  P[Image reference] --> V[H3 video node]
+  M[Video / audio reference] --> V
+  P --> I[Image generation node]
+  V --> O[Output node]
   I --> O
-  O --> R[结果库]
-  R -. 显式保存 .-> A[资产库]
+  O --> R[Results]
+  R -. Save explicitly .-> A[Assets]
 ```
 
-## 生成效果示例
+## Why MiniMax H3 Video Studio?
 
-下面的轻量动图截取自 H3 Studio 生成的 9:16、15.08 秒带音频演示视频，展示有效画面开始后的连续 5 秒。这里只公开无声动图示例，完整生成文件不进入代码仓库。
-
-[![H3 Studio 生成视频动图示例：舞台上的动画歌手](docs/assets/readme/generated-video-preview.gif)](docs/assets/readme/generated-video-preview.gif?raw=1)
-
-[动图未显示？点击这里直接打开原始 GIF。](docs/assets/readme/generated-video-preview.gif?raw=1)
-
-## 核心能力
-
-### 节点画布
-
-- 在同一画布编排图片、视频、音频参考、H3 视频、生图和输出节点。
-- 输入 `@` 引用当前节点素材；连接线与显式模式共同决定实际工作流。
-- 图像、视频剪辑和抽帧会生成新的结果节点，不会自动进入资产库；需要复用时再从节点右键保存到资产。
-- 本地图片、视频和音频可以拖入画布；节点内媒体不会被误判为本地上传。
-- 画布、资产和任务状态都可刷新恢复，结果支持预览和下载。
-
-### 七种视频创作模式
-
-<p align="center">
-  <img src="docs/assets/readme/video-modes.png" width="760" alt="H3 Video 节点支持 Auto、T2V、I2V、FL2V、R2V、V2V 和 RV2V 模式">
-</p>
-
-| 模式 | 用途 | 输入约束 |
+| Need | A raw ComfyUI workflow | MiniMax H3 Video Studio |
 | --- | --- | --- |
-| `Auto` | 根据节点连线自动选择工作流 | 适合快速编排 |
-| `T2V` | 文生视频 | 只使用文本提示词 |
-| `I2V` | 单图生视频 | 1 张起始参考图 |
-| `FL2V` | 首尾帧生视频 | 1–2 张端点图 |
-| `R2V` | 多模态参考生视频 | 图片、视频、音频合计最多 6 项 |
-| `V2V` | 源视频重制 | 显式选择 1 条源视频 |
-| `RV2V` | 源视频 + 多模态参考 | 源视频与额外参考分开绑定 |
+| Reusable creative projects | Reopen and rewire individual graphs | Persistent multi-canvas workspace with assets and results |
+| MiniMax H3 generation modes | Manually change graph inputs | Explicit T2V, I2V, FL2V, R2V, V2V, and RV2V modes |
+| Long-running generations | Keep a browser or script attached | Durable job IDs, reconnectable waiting, cancellation, and resumable sampling |
+| Local and rented GPUs | Manage endpoints and file transfer yourself | Same-origin web gateway plus reusable direct or SSH CLI contexts |
+| Agent automation | Build custom API calls | Stable `h3ctl` commands with JSON/JSONL receipts and atomic media operations |
 
-H3 视频支持 16:9、9:16 和 24 FPS，时长使用真实的 `17k+5` 帧网格：124–362 帧，约 5.17–15.08 秒。采样可选择 Turbo LoRA 或官方基础 Profile；界面展示最终解析的模型、采样器、步数、LoRA 与调度参数，不把工作流预览冒充实际任务证据。
+## Generated result preview
 
-### 多模型生图与图像编辑
+This lightweight animation is a five-second excerpt, beginning at the first usable frame, from a 9:16, 15.08-second video with audio generated by MiniMax H3 Video Studio. Only the silent animation is public; the complete generated file is not included in the repository.
+
+[![MiniMax H3 Video Studio generated video preview: an animated singer performing on stage](docs/assets/readme/generated-video-preview.gif)](docs/assets/readme/generated-video-preview.gif?raw=1)
+
+[Animation not visible? Open the original GIF directly.](docs/assets/readme/generated-video-preview.gif?raw=1)
+
+> If MiniMax H3 Video Studio helps your workflow, please consider giving the repository a Star. It helps more ComfyUI and AI-video creators discover the project.
+
+## Core capabilities
+
+### Node canvas
+
+- Compose image, video, and audio references with H3 video, image generation, and output nodes on one canvas.
+- Type `@` to reference media from the current node. Connections and the explicit mode together determine the workflow that actually runs.
+- Image edits, video clips, and extracted frames create new result nodes instead of entering the asset library automatically. Save them to Assets from the node context menu only when you want to reuse them.
+- Drag local images, videos, and audio onto the canvas. Media already inside a node is never mistaken for a local upload.
+- Restore canvas, asset, and task state after a refresh, and preview or download results.
+
+### Seven video creation modes
 
 <p align="center">
-  <img src="docs/assets/readme/image-models.png" width="760" alt="Image Generation 节点的图片模型选择器示例">
+  <img src="docs/assets/readme/video-modes.png" width="760" alt="H3 Video node mode selector with Auto, T2V, I2V, FL2V, R2V, V2V, and RV2V">
 </p>
 
-| 模型 / 工作流 | 支持方式 | 适合场景 |
+| Mode | Purpose | Input constraint |
 | --- | --- | --- |
-| Z-Image Turbo BF16 / INT8 | 文生图、实验性单图 latent img2img | 快速写实、中英文字；BF16 为默认高画质档 |
-| Z-Image Turbo + 社区 LoRA | 文生图、实验性单图 latent img2img | 独立 Profile，参数与模型绑定可审计 |
-| Qwen-Image 2512 | 高质量文生图 | 人像、自然细节、图文排版 |
-| Qwen-Image Edit 2511 | 单图指令编辑 | 保持主体并修改背景、服装或局部语义 |
-| FLUX.2 Klein 4B / 9B | 文生图、1–4 张有序图片参考 | 多图人物、服装、场景和风格组合 |
-| Anything V5 | Checkpoint 文生图 / 图生图 | 兼容回退 |
+| `Auto` | Select a workflow from node connections | Best for quick composition |
+| `T2V` | Text to video | Text prompt only |
+| `I2V` | Single-image to video | One starting image |
+| `FL2V` | First-and-last-frame to video | One or two endpoint images |
+| `R2V` | Multimodal reference to video | Up to six image, video, and audio references combined |
+| `V2V` | Source video remake | Exactly one source video selected explicitly |
+| `RV2V` | Source video plus multimodal references | Source video and additional references are bound separately |
 
-生图支持 1K/2K 与 16:9、9:16、3:4、1:1。可直接在提示词中用“图1”“图2”描述多图关系，系统按参考槽位顺序绑定。尚未发布的 Z-Image-Edit 只显示为不可用能力，不会用 latent img2img 冒充指令编辑。模型许可与精确工作流见 [图片工作流文档](docs/image-workflows.md)。
+H3 video supports 16:9, 9:16, and 24 FPS. Duration follows the actual `17k+5` frame grid: 124–362 frames, or about 5.17–15.08 seconds. Sampling can use either a Turbo LoRA or an official base profile. The interface shows the resolved model, sampler, step count, LoRA, and scheduler parameters; a workflow preview is never presented as evidence that a job actually ran.
 
-### 长视频：分段生成与续接
-
-长视频工作区把现有视频和待生成片段放进统一时间线，可预览、切分、调整入出点、创建空白段，并按选中片段或依赖顺序执行。
+### Multi-model image generation and editing
 
 <p align="center">
-  <img src="docs/assets/readme/long-video-editor.png" width="100%" alt="H3 Studio 长视频编辑器示例：监视器、分镜时间线和已有素材片段">
+  <img src="docs/assets/readme/image-models.png" width="760" alt="Image model selector in an Image Generation node">
 </p>
 
-每个待生成片段都可以选择独立生成、使用上一段尾帧续接，或把上一段视频作为 Ref2VA 参考。续接配置、画面比例、有效时长、采样档、LoRA 强度与 Seed 都会随项目保存。
+| Model / workflow | Supported operation | Best suited for |
+| --- | --- | --- |
+| Z-Image Turbo BF16 / INT8 | Text to image; experimental single-image latent img2img | Fast photorealism and Chinese/English text; BF16 is the default high-quality option |
+| Z-Image Turbo + community LoRA | Text to image; experimental single-image latent img2img | Separate, auditable profiles with model-bound parameters |
+| Qwen-Image 2512 | High-quality text to image | Portraits, natural detail, and text layout |
+| Qwen-Image Edit 2511 | Instruction-based single-image editing | Preserve the subject while changing a background, clothing, or local semantics |
+| FLUX.2 Klein 4B / 9B | Text to image; one to four ordered image references | Combining people, clothing, scenes, and styles across images |
+| Anything V5 | Checkpoint text to image / image to image | Compatibility fallback |
+
+Image generation supports 1K/2K and 16:9, 9:16, 3:4, and 1:1. Describe multi-image relationships directly with “Image 1” and “Image 2”; the system binds references in slot order. The unreleased Z-Image-Edit capability remains visibly unavailable and is not misrepresented by latent img2img. See [Image Workflows](docs/image-workflows.md) for licenses and exact workflow contracts.
+
+### Long video: segmented generation and continuation
+
+The Long Video workspace places existing footage and pending generated segments on one timeline. You can preview, split, adjust in/out points, create empty segments, and run selected segments or their dependency order.
 
 <p align="center">
-  <img src="docs/assets/readme/long-video-continuation.png" width="100%" alt="长视频片段选择上一段视频进行续接生成的界面示例">
+  <img src="docs/assets/readme/long-video-editor.png" width="100%" alt="MiniMax H3 Video Studio Long Video editor with a monitor, storyboard timeline, and existing media segment">
+</p>
+
+Each pending segment can run independently, continue from the previous segment's final frame, or use the previous video as a Ref2VA reference. Continuation settings, aspect ratio, effective duration, sampling profile, LoRA strength, and seed are saved with the project.
+
+<p align="center">
+  <img src="docs/assets/readme/long-video-continuation.png" width="100%" alt="Long Video segment configured to continue from the previous video">
 </p>
 
 ```mermaid
 flowchart LR
-  S1[分段 1] --> C{分段 2 续接方式}
-  C -->|不续接| N[独立生成]
-  C -->|上一段尾帧| F[尾帧作为 Picture 1]
-  C -->|上一段视频| V[视频作为 Ref2VA 参考]
-  N --> S2[分段 2]
+  S1[Segment 1] --> C{Segment 2 continuation}
+  C -->|None| N[Generate independently]
+  C -->|Previous final frame| F[Final frame as Picture 1]
+  C -->|Previous video| V[Video as Ref2VA reference]
+  N --> S2[Segment 2]
   F --> S2
   V --> S2
-  S2 --> S3[后续分段]
-  S1 --> Merge[按顺序合并]
+  S2 --> S3[Later segments]
+  S1 --> Merge[Merge in order]
   S2 --> Merge
   S3 --> Merge
 ```
 
-- 单段支持约 5.17–15.08 秒，失败后可重跑，前序变化会使依赖的下游片段失效并重新计算。
-- 362 帧成片作为下一段视频参考时，只裁剪系统派生的 15 秒参考副本；最终合并仍使用完整成片。
-- 合并由 FFmpeg 做可审计的硬切拼接，不宣称自动实现无缝音画衔接。
-- 支持停止任务、按计划生成、合并长视频和下载成片。完整合同见 [长视频文档](docs/long-video.md)。
+- Each segment supports about 5.17–15.08 seconds. Failed segments can be rerun; upstream changes invalidate dependent downstream segments so they can be recalculated.
+- When a finished 362-frame segment becomes the next segment's video reference, only a system-derived 15-second reference copy is trimmed. The final merge still uses the complete segment.
+- FFmpeg performs an auditable hard-cut merge. MiniMax H3 Video Studio does not claim automatic seamless audio/video transitions.
+- Stop jobs, generate from a plan, merge a long video, and download the result. See [Long Video](docs/long-video.md) for the complete contract.
 
-### 资产与结果管理
+### Asset and result management
 
-- 资产库跨画布复用图片、视频和音频，支持搜索、文件夹、置顶、多选和批量删除。
-- 文件夹删除只移除文件夹本身；其中的资产和子文件夹自动移动到上一级，不会误删媒体。
-- 结果库统一展示生成结果与剪辑派生结果，支持置顶、混合多选、全选当前项、批量删除、预览和下载。
-- 同内容素材按 SHA-256 复用并折叠展示，减少重复上传与存储占用。
+- Reuse image, video, and audio assets across canvases, with search, folders, pinning, multi-select, and bulk deletion.
+- Deleting a folder removes only the folder. Its assets and child folders move to the parent automatically, so media is not deleted by mistake.
+- Browse generated and derived editing results together, with pinning, mixed multi-select, select-all for the current view, bulk deletion, preview, and download.
+- Identical content is reused by SHA-256 and collapsed in the interface, reducing duplicate uploads and storage.
 
-### 面向 Agent 的 Go CLI
+### Go CLI for Agent automation
 
-`h3ctl` 把素材上传下载、生图生视频、任务等待与恢复、首尾帧提取、媒体派生和长视频项目拆成稳定的原子命令。它支持本地文件、远端资产 locator、机器地址可变的 SSH context，以及适合 Agent 解析的 JSON/JSONL 输出。构建、连接和完整命令说明见 [Go CLI 文档](docs/cli.md)。
+`h3ctl` exposes stable atomic commands for asset upload/download, image and video generation, resumable job waiting, endpoint-frame extraction, media derivation, and long-video projects. It supports local files, remote asset locators, SSH contexts for changing rented-machine addresses, and Agent-friendly JSON/JSONL output. See the [Go CLI guide](docs/cli.md) for build, connection, and command details.
 
-仓库同时附带一个本地 H3 提示词编译 skill，入口见 [`skills/h3-ref2va-prompt-compiler`](skills/h3-ref2va-prompt-compiler/SKILL.md)。
+> Branding compatibility: the CLI remains `h3ctl`. Existing `H3_STUDIO_*` environment variables, `h3-studio` data paths, API contracts, and persisted browser keys remain unchanged.
 
-## 三步启动
+The repository also includes one local H3 prompt compiler skill at [`skills/h3-ref2va-prompt-compiler`](skills/h3-ref2va-prompt-compiler/SKILL.md).
+
+## Start in three steps
 
 > [!IMPORTANT]
-> 一键脚本可以安装项目的锁定 Node 依赖、构建前端并启动服务，但不会代替系统安装 Python、Node.js、FFmpeg、ComfyUI、自定义节点或模型。新机器请先看 [完整安装与运行指南](docs/installation.md)。
+> The one-command script installs the locked Node dependencies, builds the frontend, and starts the services. It does not install Python, Node.js, FFmpeg, ComfyUI, custom nodes, or models at the system level. On a new machine, read the [complete installation and operation guide](docs/installation.md) first.
 
-环境要求：
+Requirements:
 
 - Node.js `>=22.13`
 - Python `>=3.11`
-- npm、`ffmpeg` 与 `ffprobe`
-- 可访问的 ComfyUI，以及所选 Profile 需要的节点和模型
-- 可选 `scenedetect>=0.6.4,<0.8`；未安装时智能分镜自动回退到 FFmpeg
+- npm, `ffmpeg`, and `ffprobe`
+- A reachable ComfyUI instance with the nodes and models required by the selected profiles
+- Optional: `scenedetect>=0.6.4,<0.8`; smart scene splitting falls back to FFmpeg when it is unavailable
 
-在项目根目录执行：
+From the project root:
 
-1. 复制配置，确认 ComfyUI URL、数据目录和模型文件名，并把示例 API Key 改成强随机值。
+1. Copy the configuration, verify the ComfyUI URL, data directories, and model filenames, then replace the example API key with a strong random value.
 
    ```bash
    cp .env.example .env.local
-   # 用编辑器修改 .env.local
+   # Edit .env.local in your editor
    ```
 
-2. 安装锁定的 Node 依赖并生成生产构建。
+2. Install the locked Node dependencies and create a production build.
 
    ```bash
    python3 scripts/h3studio.py install
    ```
 
-3. 检查依赖与 ComfyUI，然后启动 API 和生产前端。
+3. Check dependencies and ComfyUI, then start the API and production frontend.
 
    ```bash
    python3 scripts/h3studio.py doctor --check-comfy
    python3 scripts/h3studio.py start
    ```
 
-打开 `http://127.0.0.1:3013`。`start` 会监督前后端进程；任一进程退出时会停止另一进程，按 `Ctrl-C` 即可完整关闭。
+Open `http://127.0.0.1:3013`. `start` supervises both frontend and backend processes; if either exits, it stops the other. Press `Ctrl-C` to shut down both cleanly.
 
-### 管理命令
+### Management commands
 
 ```bash
-# 只检查，不修改系统
+# Inspect only; never changes the system
 python3 scripts/h3studio.py doctor
 
-# 只显示将执行的安装或启动命令
+# Show the install or start commands without running them
 python3 scripts/h3studio.py install --dry-run
 python3 scripts/h3studio.py start --dry-run
 
-# 自定义端口；三个端口必须不同
+# Custom ports; all three must be different
 python3 scripts/h3studio.py start --port 3013 --internal-port 3014 --api-port 6020
 ```
 
-`doctor` 会检查 Python、Node.js、npm、FFmpeg/FFprobe、项目文件、前端依赖/构建和密钥接线；`--check-comfy` 另检查 ComfyUI `/system_stats`。它不会下载依赖，也不能证明所有 Profile 的节点和模型已经齐全；启动后请以 `/api/capabilities` 和界面的可用性提示为准。等价 npm 命令为 `npm run doctor`、`npm run install:studio` 和 `npm run start:studio`。
+`doctor` checks Python, Node.js, npm, FFmpeg/FFprobe, project files, frontend dependencies/build output, and API-key wiring. `--check-comfy` also checks ComfyUI's `/system_stats`. It does not download dependencies and cannot prove that every profile has all required nodes and models. After startup, use `/api/capabilities` and the availability messages in the interface as the source of truth. Equivalent npm commands are `npm run doctor`, `npm run install:studio`, and `npm run start:studio`.
 
-## 本地开发
+## Local development
 
 ```bash
 npm ci
 cp .env.example .env.local
 
-# 终端 A：API
+# Terminal A: API
 set -a && source .env.local && set +a
 python3 -m server
 
-# 终端 B：前端；/api 代理到 6020
+# Terminal B: frontend; /api proxies to port 6020
 set -a && source .env.local && set +a
 npm run dev -- --host 127.0.0.1 --port 3013
 ```
 
-如果启用了 API Key，只把同一个值放进服务端的 `H3_STUDIO_API_KEY` 与前端代理进程的 `H3_STUDIO_PROXY_API_KEY`；密钥不会进入浏览器 bundle。
+If the API key is enabled, put the same value only in the server's `H3_STUDIO_API_KEY` and the frontend proxy process's `H3_STUDIO_PROXY_API_KEY`. The key is never included in the browser bundle.
 
-## AutoDL / 远程使用
+## AutoDL / remote access
 
-默认情况下 API、内部前端和公开入口都只监听 loopback。远程机器启动服务后，在本地建立 SSH 隧道：
+By default, the API, internal frontend, and public entry point listen only on loopback. After starting the services on the remote machine, create an SSH tunnel locally:
 
 ```bash
-# 远端机器
+# Remote machine
 python3 scripts/h3studio.py start
 
-# 本地电脑：只转发同源前端入口
+# Local machine: forward only the same-origin frontend entry point
 ssh -N -L 16020:127.0.0.1:3013 -p <PORT> <SSH_USER>@<HOST>
 ```
 
-浏览器打开 `http://127.0.0.1:16020`。不要为了省略隧道直接暴露 `0.0.0.0`；确需公网访问时，请配置防火墙、TLS 反向代理和强 API Key。模型、素材、生成结果、API Key 和 SSH 密码不得提交到 Git。
+Open `http://127.0.0.1:16020`. Do not expose `0.0.0.0` merely to avoid using a tunnel. If public access is necessary, configure a firewall, TLS reverse proxy, and strong API key. Never commit models, assets, generated results, API keys, or SSH passwords to Git.
 
-## 关键配置
+## Key configuration
 
-以 [`.env.example`](.env.example) 为基线。`h3studio.py` 会自动读取项目根目录的 `.env.local`，也可用 `--env-file <path>` 指定；已有进程环境变量优先。
+Use [`.env.example`](.env.example) as the baseline. `h3studio.py` automatically loads `.env.local` from the project root, or you can select a file with `--env-file <path>`. Existing process environment variables take precedence.
 
-| 变量 | 用途 |
+| Variable | Purpose |
 | --- | --- |
-| `COMFY_URL` | ComfyUI HTTP 地址 |
-| `H3_STUDIO_HOST` / `H3_STUDIO_PORT` | Python API 监听地址与端口，默认 `127.0.0.1:6020` |
-| `H3_STUDIO_WEB_HOST` / `PORT` / `H3_STUDIO_INTERNAL_WEB_PORT` | 生产前端公开地址、公开端口和内部端口 |
-| `H3_STUDIO_DATA_ROOT` | 资产与任务元数据目录，远端建议放在数据盘 |
-| `H3_STUDIO_COMFY_INPUT` / `H3_STUDIO_COMFY_OUTPUT` | ComfyUI 输入与输出目录 |
-| `H3_STUDIO_*_MODEL` / `H3_STUDIO_*_LORA` | 模型 Profile 使用的文件名 |
-| `H3_STUDIO_API_KEY` / `H3_STUDIO_PROXY_API_KEY` | API 校验与同源代理使用的同一密钥 |
-| `H3_STUDIO_COMFY_IDLE_FREE_SECONDS` | ComfyUI 全局队列空闲后调用 `/free` 的秒数；`0` 表示禁用 |
-| `H3_STUDIO_MAX_ASSET_STORAGE_BYTES` | 资产存储上限 |
-| `H3_STUDIO_MAX_ACTIVE_JOBS` | 活跃任务上限 |
-| `H3_STUDIO_MAX_PROJECT_JSON_BYTES` | 长视频项目定义上限，默认 32 MiB |
-| `H3_STUDIO_ASSET_TTL_DAYS` | 管理员手动垃圾回收使用的默认保留天数 |
+| `COMFY_URL` | ComfyUI HTTP address |
+| `H3_STUDIO_HOST` / `H3_STUDIO_PORT` | Python API bind address and port; defaults to `127.0.0.1:6020` |
+| `H3_STUDIO_WEB_HOST` / `PORT` / `H3_STUDIO_INTERNAL_WEB_PORT` | Public frontend address, public port, and internal port |
+| `H3_STUDIO_DATA_ROOT` | Asset and task metadata directory; use a data volume on remote machines |
+| `H3_STUDIO_COMFY_INPUT` / `H3_STUDIO_COMFY_OUTPUT` | ComfyUI input and output directories |
+| `H3_STUDIO_*_MODEL` / `H3_STUDIO_*_LORA` | Filenames used by model profiles |
+| `H3_STUDIO_API_KEY` / `H3_STUDIO_PROXY_API_KEY` | The same key used for API validation and the same-origin proxy |
+| `H3_STUDIO_COMFY_IDLE_FREE_SECONDS` | Seconds before calling `/free` after the global ComfyUI queue becomes idle; `0` disables it |
+| `H3_STUDIO_MAX_ASSET_STORAGE_BYTES` | Asset storage limit |
+| `H3_STUDIO_MAX_ACTIVE_JOBS` | Active job limit |
+| `H3_STUDIO_MAX_PROJECT_JSON_BYTES` | Long Video project definition limit; defaults to 32 MiB |
+| `H3_STUDIO_ASSET_TTL_DAYS` | Default retention period for administrator-triggered garbage collection |
 
-外部 Profile 放在 `H3_STUDIO_DATA_ROOT/profiles/*.json`。清单只能选择代码已审查的工作流编译器；新类型必须先增加适配器与测试，不能通过清单执行任意 ComfyUI graph、路径或命令。详细变量、模型目录和故障排查见 [安装指南](docs/installation.md)。
+Place external profiles in `H3_STUDIO_DATA_ROOT/profiles/*.json`. A manifest may select only workflow compilers reviewed in the codebase. New types require an adapter and tests; a manifest cannot run arbitrary ComfyUI graphs, paths, or commands. See the [installation guide](docs/installation.md) for complete variables, model directories, and troubleshooting.
 
-## 项目结构
+## Project structure
 
 ```text
-app/       React 节点画布与工作区 UI
-server/    Python 标准库 API、存储、任务与 ComfyUI 工作流编译
-scripts/   安装、启动、诊断、长视频与运维工具
-skills/    项目附带的单一 H3 Prompt Compiler skill
-docs/      安装、架构、模型工作流、发布规范与 LLM 代码地图
-tests/     前端构建、渲染和源码合同测试
+app/       React node canvas and workspace UI
+server/    Python standard-library API, storage, jobs, and ComfyUI workflow compilation
+scripts/   Installation, startup, diagnostics, Long Video, and operations tools
+skills/    The single bundled H3 Prompt Compiler skill
+docs/      Installation, architecture, model workflows, release policy, and LLM code map
+tests/     Frontend build, rendering, and source-contract tests
 ```
 
-后续开发请先阅读 [AGENTS.md](AGENTS.md) 和 [LLM Wiki](docs/llm-wiki.md)，面向用户的变化见 [CHANGELOG](CHANGELOG.md)。LLM Wiki 是当前实现的导航入口。
+Before contributing, read [AGENTS.md](AGENTS.md) and the [LLM Wiki](docs/llm-wiki.md). User-facing changes are recorded in the [Changelog](CHANGELOG.md). The LLM Wiki is the navigation entry point for the current implementation.
 
-## 测试
+## Testing
 
 ```bash
 npm test
 ```
 
-该命令依次执行 ESLint、TypeScript、生产构建、渲染测试，以及 Python 单元/API/长视频/运维测试。
+This command runs ESLint, TypeScript checks, the production build, rendering tests, and Python unit/API/Long Video/operations tests in sequence.
 
-## 能力边界
+## Capability boundaries
 
-H3 Studio 不把本地 H3-Base 768p 声称为官方未开源的 Context-IR/2K 全流程，也不提供所谓“官方 NSFW 开关”或审核绕过。部署者可以为合法成人内容配置本地模型政策，但必须拒绝未成年人、非自愿私密内容、未授权真实人物色情深伪、违法与侵权内容。
+MiniMax H3 Video Studio does not present the local H3-Base 768p model as the official, unreleased Context-IR/2K pipeline. It also does not provide an alleged “official NSFW switch” or moderation bypass. Operators may configure local model policies for lawful adult content, but must reject content involving minors, non-consensual intimate material, unauthorized sexual deepfakes of real people, illegal activity, or infringement.
 
-H3 的调度去噪比例直接映射 `BasicScheduler.denoise`，不是 CFG、LoRA 强度或已证明的参考保留权重。不同模型、节点和许可证的精确信息以 `/api/capabilities`、[图片工作流](docs/image-workflows.md) 和随任务保存的证据为准。
+H3 scheduler denoising maps directly to `BasicScheduler.denoise`; it is not CFG, LoRA strength, or a proven reference-preservation weight. For exact model, node, and license information, use `/api/capabilities`, [Image Workflows](docs/image-workflows.md), and the evidence saved with each job.

@@ -22,20 +22,20 @@ async function render() {
   );
 }
 
-test("server-renders the H3 Studio shell", async () => {
+test("server-renders the MiniMax H3 Video Studio shell", async () => {
   const response = await render();
   assert.equal(response.status, 200);
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
 
   const html = await response.text();
-  assert.match(html, /<title>H3 Studio · AI 视频工作台<\/title>/i);
-  assert.match(html, /H3 Studio/);
+  assert.match(html, /<title>MiniMax H3 Video Studio · AI 视频工作台<\/title>/i);
+  assert.match(html, /MiniMax H3 Video Studio/);
   assert.doesNotMatch(html, /Your site is taking shape|react-loading-skeleton/);
 });
 
-test("ships H3 Studio metadata and client entry", async () => {
+test("ships MiniMax H3 Video Studio metadata and client entry", async () => {
   const response = await render();
   const html = await response.text();
   assert.match(html, /AI 视频工作台/);
-  assert.match(html, /Visual AI production|H3 Studio/);
+  assert.match(html, /Visual AI production|MiniMax H3 Video Studio/);
 });

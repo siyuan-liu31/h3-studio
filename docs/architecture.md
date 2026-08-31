@@ -1,10 +1,10 @@
-# H3 Studio 架构规格
+# MiniMax H3 Video Studio 架构规格
 
 > 状态：早期设计基线；更新日期：2026-08-19。本文保留设计背景，可能含已演进的容量或实现描述。当前代码地图、事实来源与修改入口请先看 [LLM Wiki](llm-wiki.md)，最终以源码、测试和 capability 回执为准。
 
 ## 1. 产品目标
 
-H3 Studio 是运行在远程开发机上的可维护 Web 应用。用户通过本地浏览器：
+MiniMax H3 Video Studio 是运行在远程开发机上的可维护 Web 应用。用户通过本地浏览器：
 
 1. 把提示词、图片、视频、音频、参数、生成器和输出节点拖入画布并连线；
 2. 由应用根据输入关系自动选择 H3 FL2VA 或 Ref2VA 工作流；
@@ -24,7 +24,7 @@ Browser
        ├─ graph validation and final material-label preview
        └─ HTTPS/SSH tunnel
             ↓
-H3 Studio server
+MiniMax H3 Video Studio server
   ├─ REST API (projects, assets, jobs, downloads, capabilities)
   ├─ graph schema + compiler + prompt compiler
   ├─ upload preflight (type, size, dimensions, duration, codecs)
@@ -43,7 +43,7 @@ ComfyUI :6006
   └─ configured image profile(s)
 ```
 
-ComfyUI 官方说明：客户端通过 `/prompt` 提交完整工作流，WebSocket `/ws` 接收实时消息，`/history/{prompt_id}` 获取特定任务历史，`/view` 读取输出，`/upload/image` 上传图片，`/object_info` 用于发现节点能力。适配层应把这些接口藏在 H3 Studio 服务端之后，不让浏览器持有服务器文件路径或任意工作流执行权。
+ComfyUI 官方说明：客户端通过 `/prompt` 提交完整工作流，WebSocket `/ws` 接收实时消息，`/history/{prompt_id}` 获取特定任务历史，`/view` 读取输出，`/upload/image` 上传图片，`/object_info` 用于发现节点能力。适配层应把这些接口藏在 MiniMax H3 Video Studio 服务端之后，不让浏览器持有服务器文件路径或任意工作流执行权。
 
 ## 3. 画布 DSL
 
@@ -78,7 +78,7 @@ ComfyUI 官方说明：客户端通过 `/prompt` 提交完整工作流，WebSock
 }
 ```
 
-资产节点只保存 H3 Studio 的 `assetId`、哈希、媒体元数据、授权/来源字段和用户角色，不保存浏览器绝对路径。生成记录保存规范化图快照、编译后的 prompt、模型 profile 版本、ComfyUI prompt、`prompt_id`、输出元数据和错误，确保克隆机器或重启服务后仍能复现参数。
+资产节点只保存 MiniMax H3 Video Studio 的 `assetId`、哈希、媒体元数据、授权/来源字段和用户角色，不保存浏览器绝对路径。生成记录保存规范化图快照、编译后的 prompt、模型 profile 版本、ComfyUI prompt、`prompt_id`、输出元数据和错误，确保克隆机器或重启服务后仍能复现参数。
 
 ## 4. 视频自动路由
 
@@ -193,7 +193,7 @@ profile 在启动时用 `/object_info` 和模型列表验证。文件缺失或�
 - 同哈希可去重；删除项目时采用引用计数或延迟垃圾回收，不得误删仍被任务引用的资产。
 - 所有源素材保存来源、授权与用户声明字段；这对真实人物、影视片段、音乐和品牌素材尤其重要。
 
-ComfyUI 只官方提供通用 `/upload/image` 路由；视频和音频的文件落盘必须由 H3 Studio 的受控媒体 staging 层完成，写入预先配置的 ComfyUI input 子目录，随后模板只引用服务端返回的安全相对名。不得让 API 调用者指定任意服务器路径。
+ComfyUI 只官方提供通用 `/upload/image` 路由；视频和音频的文件落盘必须由 MiniMax H3 Video Studio 的受控媒体 staging 层完成，写入预先配置的 ComfyUI input 子目录，随后模板只引用服务端返回的安全相对名。不得让 API 调用者指定任意服务器路径。
 
 ## 8. 任务与结果
 
@@ -213,7 +213,7 @@ submitting → queued → running → completed
 
 ## 9. 可扩展模型与工作流 Profile
 
-H3 Studio 的画布只表达受类型约束的创作意图，不把模型名、ComfyUI `class_type` 或文件路径写死在前端。每个可安装能力由版本化 Profile 清单声明：
+MiniMax H3 Video Studio 的画布只表达受类型约束的创作意图，不把模型名、ComfyUI `class_type` 或文件路径写死在前端。每个可安装能力由版本化 Profile 清单声明：
 
 ```json
 {
@@ -286,7 +286,7 @@ GET    /api/jobs/:id/result
 
 ## 12. 安全、隐私和内容政策
 
-- H3 Studio API 只监听 loopback 或受认证反向代理；SSH 隧道是当前默认访问方式。
+- MiniMax H3 Video Studio API 只监听 loopback 或受认证反向代理；SSH 隧道是当前默认访问方式。
 - 不在前端代码、仓库、日志或任务记录里保存 AutoDL 密码、API Key。
 - 当前默认是 SSH 隧道后的 loopback 单用户部署；生产代理密钥不是多用户会话认证。若未来公网部署，必须增加 HttpOnly/SameSite 会话、CSRF 防护和对象级授权后才能开放。
 - 限制并发生成、上传速率、单用户磁盘用量和任务队列长度，防止 GPU 与磁盘耗尽。

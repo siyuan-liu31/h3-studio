@@ -1,6 +1,6 @@
-# H3 Studio 发布规范
+# MiniMax H3 Video Studio 发布规范
 
-本文约束 H3 Studio 的版本、Git 分支、Tag、GitHub Release 与 Changelog。准备发布不等于允许发布：只有用户在当前任务中明确要求“发布到 GitHub”时，才可以执行任何远端写操作。
+本文约束 MiniMax H3 Video Studio 的版本、Git 分支、Tag、GitHub Release 与 Changelog。准备发布不等于允许发布：只有用户在当前任务中明确要求“发布到 GitHub”时，才可以执行任何远端写操作。
 
 ## 版本合同
 
@@ -31,7 +31,7 @@
 
 ```bash
 # 示例只展示顺序；X.Y.Z 必须替换为已确认版本。
-git tag -a vX.Y.Z -m "H3 Studio vX.Y.Z"
+git tag -a vX.Y.Z -m "MiniMax H3 Video Studio vX.Y.Z"
 git push origin main
 git push origin vX.Y.Z
 gh release create vX.Y.Z --verify-tag --title "vX.Y.Z" --notes-from-tag

@@ -197,7 +197,7 @@ func (r *Runner) parseGlobals(args []string) (string, []string, error) {
 	set := flag.NewFlagSet("h3ctl", flag.ContinueOnError)
 	set.SetOutput(io.Discard)
 	set.StringVar(&r.Globals.Context, "context", "", "named connection context")
-	set.StringVar(&r.Globals.Server, "server", "", "one-shot H3 Studio URL")
+	set.StringVar(&r.Globals.Server, "server", "", "one-shot MiniMax H3 Video Studio URL")
 	set.StringVar(&r.Globals.Format, "output", "table", "table, json, or jsonl")
 	jsonOutput := set.Bool("json", false, "alias for --output json")
 	rootHelp := set.Bool("help", false, "show help")
@@ -450,7 +450,7 @@ func commandPath(top string, args []string) string {
 	return top
 }
 
-const RootHelp = `h3ctl controls an H3 Studio API for people and automation agents.
+const RootHelp = `h3ctl controls MiniMax H3 Video Studio for people and automation agents.
 
 Usage:
   h3ctl [global flags] COMMAND [SUBCOMMAND] [flags]

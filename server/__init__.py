@@ -1,4 +1,4 @@
-"""H3 Studio backend package."""
+"""MiniMax H3 Video Studio backend package."""
 
 from .app import create_server
 

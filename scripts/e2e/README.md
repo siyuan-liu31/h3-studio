@@ -1,4 +1,4 @@
-# H3 Studio remote API E2E
+# MiniMax H3 Video Studio remote API E2E
 
 This standard-library Python tool exercises the deployed web/API boundary instead of importing server internals. It queries capabilities, resolves an available concrete profile, pins its `id`, `version`, and `manifest_sha256`, streams reference uploads, submits a canonical graph, polls the durable job, downloads the output, checks its SHA-256, and validates it with `ffprobe`.
 

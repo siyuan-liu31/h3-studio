@@ -1,11 +1,11 @@
-# H3 Studio
+# MiniMax H3 Video Studio
 
 <p align="center">
-  <a href="README.md">简体中文</a> · <a href="README.en.md">English</a> · 日本語
+  <a href="README.md">English</a> · <a href="README.zh-CN.md">简体中文</a> · 日本語
 </p>
 
 <p align="center">
-  <strong>ローカル／リモート ComfyUI に対応した、ノードベースの MiniMax H3 ビジュアル制作ワークスペース</strong>
+  <strong>MiniMax H3 + ComfyUI のためのビジュアル AI 動画ワークスペース</strong>
 </p>
 
 <p align="center">
@@ -20,12 +20,14 @@
   <a href="docs/releasing.md">リリース規約</a>
 </p>
 
-H3 Studio は、素材、プロンプト、モデルパラメータ、生成結果を永続化可能な 1 枚のキャンバス上で管理します。ブラウザはノード構成、参照素材の紐付け、プレビュー、プロジェクト管理を担当し、Python サービスは安全なアップロード、ワークフローのコンパイル、ComfyUI キュー、結果のダウンロードと復元を担当します。キャンバスは自動保存され、複数の独立したワークフローを同時に管理できます。
+MiniMax H3 Video Studio は、素材、プロンプト、モデルパラメータ、生成結果を永続化可能な 1 枚のキャンバス上で管理します。ブラウザはノード構成、参照素材の紐付け、プレビュー、プロジェクト管理を担当し、Python サービスは安全なアップロード、ワークフローのコンパイル、ComfyUI キュー、結果のダウンロードと復元を担当します。キャンバスは自動保存され、複数の独立したワークフローを同時に管理できます。
+
+> MiniMax H3 Video Studio は独立したコミュニティプロジェクトであり、MiniMax または ComfyUI との提携・公認関係はありません。
 
 > 以下の画面では、ユーザーが公開を許可したデモ素材を使用しています。元の素材、モデルの重み、生成動画ファイルはリポジトリに含まれません。
 
 <p align="center">
-  <img src="docs/assets/readme/canvas-workflow.png" width="100%" alt="画像参照、H3 動画ノード、出力ノードで構成された H3 Studio のノードキャンバス">
+  <img src="docs/assets/readme/canvas-workflow.png" width="100%" alt="画像参照、H3 動画ノード、出力ノードで構成された MiniMax H3 Video Studio のノードキャンバス">
 </p>
 
 ```mermaid
@@ -41,9 +43,9 @@ flowchart LR
 
 ## 生成結果のプレビュー
 
-以下の軽量アニメーションは、H3 Studio で生成した 9:16、15.08 秒、音声付き動画のうち、有効な映像が始まってからの連続 5 秒を切り出したものです。公開しているのは無音のアニメーションだけで、完全な生成ファイルはリポジトリに含まれません。
+以下の軽量アニメーションは、MiniMax H3 Video Studio で生成した 9:16、15.08 秒、音声付き動画のうち、有効な映像が始まってからの連続 5 秒を切り出したものです。公開しているのは無音のアニメーションだけで、完全な生成ファイルはリポジトリに含まれません。
 
-[![H3 Studio の生成動画プレビュー：ステージで歌うアニメキャラクター](docs/assets/readme/generated-video-preview.gif)](docs/assets/readme/generated-video-preview.gif?raw=1)
+[![MiniMax H3 Video Studio の生成動画プレビュー：ステージで歌うアニメキャラクター](docs/assets/readme/generated-video-preview.gif)](docs/assets/readme/generated-video-preview.gif?raw=1)
 
 [アニメーションが表示されない場合は、元の GIF を直接開いてください。](docs/assets/readme/generated-video-preview.gif?raw=1)
 
@@ -97,7 +99,7 @@ H3 動画は 16:9、9:16、24 FPS に対応します。長さは実際の `17k+5
 長尺動画ワークスペースでは、既存動画と生成待ちのセグメントを同じタイムラインに配置できます。プレビュー、分割、イン／アウト点の調整、空白セグメントの作成に加え、選択したセグメントまたは依存順での実行に対応します。
 
 <p align="center">
-  <img src="docs/assets/readme/long-video-editor.png" width="100%" alt="モニター、絵コンテタイムライン、既存素材セグメントを備えた H3 Studio 長尺動画エディター">
+  <img src="docs/assets/readme/long-video-editor.png" width="100%" alt="モニター、絵コンテタイムライン、既存素材セグメントを備えた MiniMax H3 Video Studio 長尺動画エディター">
 </p>
 
 各生成待ちセグメントは、独立生成、前セグメントの最終フレームからの継続、または前セグメントの動画を Ref2VA 参照として使う方法を選べます。継続設定、アスペクト比、有効時間、サンプリング Profile、LoRA 強度、Seed はプロジェクトとともに保存されます。
@@ -267,6 +269,6 @@ npm test
 
 ## 機能上の境界
 
-H3 Studio は、ローカルの H3-Base 768p を公式未公開の Context-IR/2K パイプラインとして扱いません。また、いわゆる「公式 NSFW スイッチ」やモデレーション回避機能も提供しません。運用者は合法な成人向けコンテンツにローカルモデルポリシーを設定できますが、未成年者、同意のない親密なコンテンツ、実在人物を無断で用いた性的ディープフェイク、違法行為、権利侵害に関わるコンテンツは拒否しなければなりません。
+MiniMax H3 Video Studio は、ローカルの H3-Base 768p を公式未公開の Context-IR/2K パイプラインとして扱いません。また、いわゆる「公式 NSFW スイッチ」やモデレーション回避機能も提供しません。運用者は合法な成人向けコンテンツにローカルモデルポリシーを設定できますが、未成年者、同意のない親密なコンテンツ、実在人物を無断で用いた性的ディープフェイク、違法行為、権利侵害に関わるコンテンツは拒否しなければなりません。
 
 H3 のスケジューラーノイズ除去率は `BasicScheduler.denoise` に直接対応し、CFG、LoRA 強度、または実証済みの参照保持ウェイトではありません。モデル、ノード、ライセンスの正確な情報は `/api/capabilities`、[画像ワークフロー](docs/image-workflows.md)、各タスクに保存された証拠を参照してください。

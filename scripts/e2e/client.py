@@ -1,4 +1,4 @@
-"""Small standard-library client for the H3 Studio HTTP API."""
+"""Small standard-library client for the MiniMax H3 Video Studio HTTP API."""
 
 from __future__ import annotations
 

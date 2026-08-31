@@ -1,4 +1,4 @@
-# H3 Studio Agent Guide
+# MiniMax H3 Video Studio Agent Guide
 
 ## 开始前
 

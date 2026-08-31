@@ -1,4 +1,4 @@
-"""Command-line entry point for remote H3 Studio E2E validation."""
+"""Command-line entry point for remote MiniMax H3 Video Studio E2E validation."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from .scenarios import SCENARIOS, dry_run_plan, load_manifest, resolve_profile
 
 
 def parser() -> argparse.ArgumentParser:
-    command = argparse.ArgumentParser(description="Run reproducible H3 Studio remote API E2E scenarios")
+    command = argparse.ArgumentParser(description="Run reproducible MiniMax H3 Video Studio remote API E2E scenarios")
     command.add_argument("--manifest", type=Path, help="versioned JSON scenario manifest")
     command.add_argument("--base-url", default=os.environ.get("H3_E2E_BASE_URL", "http://127.0.0.1:3013"))
     command.add_argument("--api-key-env", default="H3_STUDIO_API_KEY", help="environment variable containing the API key")

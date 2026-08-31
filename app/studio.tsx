@@ -2280,7 +2280,7 @@ export default function Studio() {
 
   return <main className="studio-shell">
     <header className="topbar">
-      <div className="brand"><span className="brand-mark">H3</span><div><strong>H3 Studio</strong><small>Visual AI production</small></div></div>
+      <div className="brand"><span className="brand-mark">H3</span><div><strong>MiniMax H3 Video Studio</strong><small>MiniMax H3 + ComfyUI</small></div></div>
       <div className="canvas-tabs-wrap">
         <div className="project-title canvas-workspace-status"><span className="status-dot" /> Local workflow <span className="saved">自动保存</span></div>
         <div className="canvas-tablist" role="tablist" aria-label="画布标签">

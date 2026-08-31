@@ -1,6 +1,6 @@
 # Image workflow profiles
 
-H3 Studio keeps image generation separate from MiniMax H3. Image profiles are
+MiniMax H3 Video Studio keeps image generation separate from MiniMax H3. Image profiles are
 versioned, capability-probed ComfyUI graphs; unavailable models stay visible but
 disabled rather than silently falling back to a different graph.
 
@@ -88,12 +88,12 @@ instruction editing.
 The model picker also exposes `Z-Image-Edit` as a disabled, non-selectable
 roadmap entry. As of 2026-08-21 the official model zoo still labels both
 Z-Image-Edit and Z-Image-Omni-Base **To be released**, with no reviewed
-checkpoint binding or official ComfyUI graph. H3 Studio will not substitute the
+checkpoint binding or official ComfyUI graph. MiniMax H3 Video Studio will not substitute the
 Turbo latent workflow and claim it is Z-Image-Edit.
 
 FLUX.2 Klein 4B is Apache-2.0. FLUX.2 Klein 9B is gated and licensed only for
 non-commercial use; accepting access on Hugging Face does not turn it into a
-commercial license. Both remain subject to their model usage policy. H3 Studio
+commercial license. Both remain subject to their model usage policy. MiniMax H3 Video Studio
 does not advertise a safety-filter bypass.
 
 ## Z-Image Turbo + ZIT NSFW LoRA
@@ -107,7 +107,7 @@ sha256: 44bf34ce695ebcec6ca17f7dc27511f8fc4204943114d6c7c41cd4559e75dbaf
 ```
 
 Place the file in `ComfyUI/models/loras/`, verify the SHA-256, and refresh or
-restart ComfyUI. H3 Studio checks the exact filename through `/object_info`; it
+restart ComfyUI. MiniMax H3 Video Studio checks the exact filename through `/object_info`; it
 does not silently substitute another LoRA. Both profiles keep Z-Image Turbo's
 8-step, CFG 1, `res_multistep/simple`, shift 3 sampling graph. LoRA strength is
 an independent model weight with a built-in range of 0–1.25.

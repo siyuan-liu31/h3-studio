@@ -52,7 +52,7 @@ func (c *Client) request(ctx context.Context, method, path string, body io.Reade
 	client := *c.HTTP
 	// Keep this invariant even when tests or embedders replace HTTP. Go's
 	// Redirects are deliberately not followed: every request stays on the
-	// configured H3 Studio origin.
+	// configured MiniMax H3 Video Studio origin.
 	client.CheckRedirect = func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }
 	client.Timeout = timeout
 	response, err := client.Do(req)

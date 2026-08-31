@@ -2,7 +2,7 @@
 
 > 状态：需求草案
 > 日期：2026-08-30
-> 范围：H3 Studio 服务端媒体派生、前端资产界面与 `h3ctl`
+> 范围：MiniMax H3 Video Studio 服务端媒体派生、前端资产界面与 `h3ctl`
 
 ## 1. 背景
 
@@ -10,7 +10,7 @@ MiniMax H3 Ref2VA 会将文本、参考图像、参考视频、音频和目标�
 
 已有端到端验证表明：将 15 秒竖屏参考视频从 720×1280 预处理为 480×864、24 FPS 后，保持 15 秒、768×1344 目标输出和 Turbo 4 步可正常生成，不再出现灰屏。
 
-本需求要将这一处理封装为 H3 Studio 的可复用能力，而不是在 ComfyUI 工作流中隐式转码或写死单一分辨率。
+本需求要将这一处理封装为 MiniMax H3 Video Studio 的可复用能力，而不是在 ComfyUI 工作流中隐式转码或写死单一分辨率。
 
 ## 2. 目标
 
@@ -30,12 +30,12 @@ MiniMax H3 Ref2VA 会将文本、参考图像、参考视频、音频和目标�
 
 ## 4. 架构边界
 
-预处理应位于 H3 Studio 服务端媒体派生层，并由前端和 `h3ctl` 共用：
+预处理应位于 MiniMax H3 Video Studio 服务端媒体派生层，并由前端和 `h3ctl` 共用：
 
 ```text
 前端 / h3ctl
     ↓
-H3 Studio 媒体派生 API
+MiniMax H3 Video Studio 媒体派生 API
     ↓
 prepare_h3_reference
     ↓

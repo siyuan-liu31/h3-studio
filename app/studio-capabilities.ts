@@ -57,7 +57,7 @@ export type ImageReferencePolicy = {
   source: "capability" | "limits" | "legacy-adapter";
 };
 
-// H3 Studio keeps every task inside the repository-wide six-reference budget,
+// MiniMax H3 Video Studio keeps every task inside the repository-wide six-reference budget,
 // even when a future model advertises a larger native context window.
 export const STUDIO_REFERENCE_BUDGET = 6;
 

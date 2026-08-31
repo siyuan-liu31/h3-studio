@@ -98,7 +98,7 @@ func idLocator(raw, prefix string, kind Kind) (Locator, error) {
 	return Locator{Raw: raw, Kind: kind, ID: id}, nil
 }
 
-// ValidServerID is the single public identifier contract used by H3 Studio.
+// ValidServerID is the single public identifier contract used by MiniMax H3 Video Studio.
 // Server-created assets, jobs, derivations and projects are lowercase UUID
 // hex strings without separators.
 func ValidServerID(value string) bool {

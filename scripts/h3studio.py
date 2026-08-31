@@ -362,7 +362,7 @@ def _print_plan(specs: Sequence[ProcessSpec], environment: Mapping[str, str]) ->
 
 
 def parser() -> argparse.ArgumentParser:
-    command = argparse.ArgumentParser(description="Install, diagnose, and run H3 Studio")
+    command = argparse.ArgumentParser(description="Install, diagnose, and run MiniMax H3 Video Studio")
     subcommands = command.add_subparsers(dest="command", required=True)
     doctor = subcommands.add_parser("doctor", help="check host dependencies and configuration")
     doctor.add_argument("--env-file", type=Path)
@@ -413,7 +413,7 @@ def main(
                     raise ManagerError(f"cannot run {item[0]}: {error}") from error
                 if result.returncode:
                     raise ManagerError(f"{shlex.join(item)} failed with exit code {result.returncode}")
-            print("H3 Studio dependencies installed and production build completed.")
+            print("MiniMax H3 Video Studio dependencies installed and production build completed.")
             return 0
 
         environment, env_path = merged_environment(root, args.env_file, base_env)
@@ -446,7 +446,7 @@ def main(
         supervisor = supervisor_factory(shutdown_timeout=args.shutdown_timeout)
         return supervisor.run(specs, cwd=root, env=child_environment)
     except ManagerError as error:
-        print(f"H3 Studio error: {error}", file=sys.stderr)
+        print(f"MiniMax H3 Video Studio error: {error}", file=sys.stderr)
         return 2
 
 

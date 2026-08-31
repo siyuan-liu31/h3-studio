@@ -1,4 +1,4 @@
-"""Long-video API acceptance tooling for H3 Studio."""
+"""Long-video API acceptance tooling for MiniMax H3 Video Studio."""
 
 from .manifest import load_manifest, validate_manifest
 from .runner import LongVideoError, execute_manifest

@@ -1,10 +1,10 @@
-# H3 Studio 安装与运行指南
+# MiniMax H3 Video Studio 安装与运行指南
 
 本文档面向首次部署和运维人员。快速命令见项目根目录的 `README.md`；本文档说明安装脚本的边界、完整依赖、ComfyUI 节点/模型和远程访问方式。
 
 ## 1. 先说结论
 
-H3 Studio 目前提供“一条命令安装应用、一条命令启动应用”，但不是从空机器开始的全自动安装器：
+MiniMax H3 Video Studio 目前提供“一条命令安装应用、一条命令启动应用”，但不是从空机器开始的全自动安装器：
 
 ```bash
 python3 scripts/h3studio.py install
@@ -55,11 +55,11 @@ Linux 是远程 GPU 机的主要部署环境。macOS 可运行 Studio 或通过 
 python3 -m pip install "scenedetect>=0.6.4,<0.8"
 ```
 
-PySceneDetect 只用于智能分镜建议。未安装或运行失败时，后端会在同一超时预算内回退到 FFmpeg，不影响其他功能。建议把它安装到运行 H3 Studio API 的同一 Python 环境。
+PySceneDetect 只用于智能分镜建议。未安装或运行失败时，后端会在同一超时预算内回退到 FFmpeg，不影响其他功能。建议把它安装到运行 MiniMax H3 Video Studio API 的同一 Python 环境。
 
 ### 音色转换运行时
 
-换声依赖不安装进 H3 Studio 主 Python；两个上游项目共用一个独立 Python 3.10
+换声依赖不安装进 MiniMax H3 Video Studio 主 Python；两个上游项目共用一个独立 Python 3.10
 环境，并放在不受 release 切换影响的持久目录。以下 revision 是已审核合同：
 
 ```bash
@@ -108,7 +108,7 @@ PyTorch/CUDA 组合；当当前 torchaudio 不再提供 `sox_effects` 时，Work
 适配到系统 SoX，仍执行上游同样的 echo/reverb 参数和混音函数；当新版 torchaudio
 把 WAV 读写改为依赖可选 TorchCodec 时，Worker 仅把上游 WAV 读写桥接到 SoundFile。
 这两个兼容层都不改变模型、采样率或推理参数。FP16 是该上游
-公开工作流的默认，不是 H3 Studio
+公开工作流的默认，不是 MiniMax H3 Video Studio
 的显存降级策略。模型和数据仍受各上游 license/使用条款约束；上线前由部署者确认。
 
 启动后先检查：
@@ -124,7 +124,7 @@ printf '{}\n' | h3ctl operation run gpu.status --input - --json
 
 ## 4. ComfyUI 、节点与 SageAttention
 
-H3 Studio 不执行用户上传的任意 ComfyUI graph，而是生成受控工作流。因此，ComfyUI `/object_info` 必须报告当前 Profile 所需的类型和精确模型文件名。
+MiniMax H3 Video Studio 不执行用户上传的任意 ComfyUI graph，而是生成受控工作流。因此，ComfyUI `/object_info` 必须报告当前 Profile 所需的类型和精确模型文件名。
 
 项目不用一个推测的 ComfyUI 版本号代替运行时能力检测。使用包含 H3 原生节点的当前 ComfyUI，并在每次更新 ComfyUI/KJNodes 后重新检查 `/api/capabilities` 和实际 GPU 任务。
 
@@ -207,7 +207,7 @@ cp .env.example .env.local
 
 ## 7. 安装、检查与启动
 
-在 H3 Studio 项目根目录执行：
+在 MiniMax H3 Video Studio 项目根目录执行：
 
 ```bash
 # 1. 安装 package-lock.json 锁定的 Node 依赖并生产构建
@@ -243,7 +243,7 @@ curl -fsS http://127.0.0.1:3013/api/capabilities
 远程 GPU 机：
 
 ```bash
-cd /path/to/h3-studio
+cd /path/to/minimax-h3-video-studio
 python3 scripts/h3studio.py start
 ```
 
@@ -265,17 +265,17 @@ lsof -nP -iTCP:16020 -sTCP:LISTEN
 
 ### `doctor` 报 Node.js 版本过低
 
-安装 Node.js `>=22.13`，并确认运行 H3 Studio 的同一 shell/服务能在 `PATH` 中找到它。交互终端可以找到 Node 不代表 systemd、`nohup` 或调度器也使用相同 `PATH`。
+安装 Node.js `>=22.13`，并确认运行 MiniMax H3 Video Studio 的同一 shell/服务能在 `PATH` 中找到它。交互终端可以找到 Node 不代表 systemd、`nohup` 或调度器也使用相同 `PATH`。
 
 ### `doctor --check-comfy` 报 ComfyUI 不可达
 
-确认 ComfyUI 已启动，并在 H3 Studio 运行环境中执行：
+确认 ComfyUI 已启动，并在 MiniMax H3 Video Studio 运行环境中执行：
 
 ```bash
 curl -fsS http://127.0.0.1:6006/system_stats
 ```
 
-命令行不会自动将 `.env.local` 导入当前 shell，因此上面直接写了默认地址；如果配置了其他 `COMFY_URL`，请替换该地址。如两个服务在不同容器/机器，`127.0.0.1` 指向的是各自容器/机器，需要改成 H3 Studio 真正可访问的 ComfyUI 地址。
+命令行不会自动将 `.env.local` 导入当前 shell，因此上面直接写了默认地址；如果配置了其他 `COMFY_URL`，请替换该地址。如两个服务在不同容器/机器，`127.0.0.1` 指向的是各自容器/机器，需要改成 MiniMax H3 Video Studio 真正可访问的 ComfyUI 地址。
 
 ### Profile 显示“未安装”
 
@@ -288,7 +288,7 @@ curl -fsS http://127.0.0.1:6006/system_stats
 
 ### 页面可打开，生成才失败
 
-依次查看 H3 Studio 日志、ComfyUI 日志和失败 job 的工作流证据。常见原因是 SageAttention 内核与 GPU 架构不匹配、显存/内存不足、文件损坏，或 ComfyUI 节点输入合同变化。接口返回 200 不能替代实际 GPU 验收。
+依次查看 MiniMax H3 Video Studio 日志、ComfyUI 日志和失败 job 的工作流证据。常见原因是 SageAttention 内核与 GPU 架构不匹配、显存/内存不足、文件损坏，或 ComfyUI 节点输入合同变化。接口返回 200 不能替代实际 GPU 验收。
 
 ## 10. 升级原则
 

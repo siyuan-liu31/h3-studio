@@ -4,7 +4,7 @@
 >
 > 日期：2026-08-30
 >
-> 范围：H3 Studio 服务端、ComfyUI 工作流、前端和 `h3ctl`
+> 范围：MiniMax H3 Video Studio 服务端、ComfyUI 工作流、前端和 `h3ctl`
 
 ## 1. 目标
 

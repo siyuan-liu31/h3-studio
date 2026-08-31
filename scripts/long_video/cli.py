@@ -20,7 +20,7 @@ ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 def parser() -> argparse.ArgumentParser:
-    command = argparse.ArgumentParser(description="Exercise the H3 Studio long-video API and verify the merged output")
+    command = argparse.ArgumentParser(description="Exercise the MiniMax H3 Video Studio long-video API and verify the merged output")
     command.add_argument("--manifest", type=Path, required=True)
     command.add_argument("--base-url", default=os.environ.get("H3_E2E_BASE_URL", "http://127.0.0.1:3013"))
     command.add_argument("--api-key-env", default="H3_E2E_API_KEY", help="environment variable containing the key; never a literal key")

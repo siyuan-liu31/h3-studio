@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://h3-studio.local/schemas/e2e-manifest-v1.json",
-  "title": "H3 Studio remote E2E manifest",
+  "title": "MiniMax H3 Video Studio remote E2E manifest",
   "type": "object",
   "additionalProperties": false,
   "required": ["version", "runs"],
