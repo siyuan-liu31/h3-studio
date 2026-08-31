@@ -1,0 +1,147 @@
+package command
+
+import (
+	"context"
+	"fmt"
+	"net/http"
+	"net/url"
+	"time"
+
+	"h3studio/cli/internal/operation"
+	"h3studio/cli/internal/resource"
+)
+
+const VoiceHelp = `Usage: h3ctl voice COMMAND
+
+  convert SOURCE --reference AUDIO --engine vevo2|yingmusic [--detach] [--to PATH]
+  status TASK
+  wait TASK [--timeout DURATION] [--poll-interval DURATION]
+  cancel TASK
+  delete TASK
+  download TASK --to PATH [--force]
+  capabilities
+
+vevo2 uses the reviewed FM-only style-preserved VC/SVC path.
+yingmusic runs the official separation, singing conversion, and remix pipeline.
+SOURCE and --reference accept local files, asset:ID, job:ID#INDEX, or media:ID.
+Conversion waits by default; --detach returns after durable queue submission.
+Example: h3ctl voice convert song.wav --reference singer.wav --engine yingmusic --to converted.wav
+`
+
+func (r *Runner) runVoice(ctx context.Context, args []string) (any, error) {
+	if help(args) {
+		fmt.Fprint(r.Streams.Out, VoiceHelp)
+		return nil, nil
+	}
+	switch args[0] {
+	case "convert":
+		set := newFlags("voice convert")
+		engine := set.String("engine", "", "")
+		reference := set.String("reference", "", "")
+		detach := set.Bool("detach", false, "")
+		to := set.String("to", "", "")
+		force := set.Bool("force", false, "")
+		timeout := set.Duration("timeout", 0, "")
+		poll := set.Duration("poll-interval", 5*time.Second, "")
+		if err := parseFlags(set, args[1:]); err != nil {
+			return nil, usage("%v", err)
+		}
+		if set.NArg() != 1 || *reference == "" || (*engine != "vevo2" && *engine != "yingmusic") {
+			return nil, usage("voice convert requires SOURCE, --reference AUDIO, and --engine vevo2|yingmusic")
+		}
+		if *timeout < 0 || *poll <= 0 || (*detach && *to != "") {
+			return nil, usage("timeouts must be valid and --detach cannot be combined with --to")
+		}
+		submitted, err := r.Service.SubmitVoice(ctx, *engine, set.Arg(0), *reference, r.Globals.RequestID)
+		if err != nil {
+			return nil, err
+		}
+		taskID := stringAny(submitted["task_id"], "")
+		result := map[string]any{"submitted": submitted, "task_id": taskID}
+		if *detach {
+			return result, nil
+		}
+		completed, err := r.Service.WaitVoice(ctx, taskID, operation.WaitOptions{Timeout: *timeout, PollInterval: *poll, OnEvent: r.Printer.Event})
+		if err != nil {
+			return nil, err
+		}
+		result["completed"] = completed
+		if *to != "" {
+			downloaded, err := r.Service.API.Download(ctx, "/api/voice/tasks/"+url.PathEscape(taskID)+"/download", *to, *force)
+			if err != nil {
+				return nil, err
+			}
+			result["download"] = downloaded
+		}
+		return result, nil
+	case "status":
+		if len(args) != 2 {
+			return nil, usage("voice status requires TASK")
+		}
+		id, err := voiceTaskID(args[1])
+		if err != nil {
+			return nil, err
+		}
+		return r.Service.API.Get(ctx, "/api/voice/tasks/"+url.PathEscape(id))
+	case "wait":
+		set := newFlags("voice wait")
+		timeout := set.Duration("timeout", 0, "")
+		poll := set.Duration("poll-interval", 5*time.Second, "")
+		if err := parseFlags(set, args[1:]); err != nil || set.NArg() != 1 || *timeout < 0 || *poll <= 0 {
+			return nil, usage("voice wait requires TASK and valid durations")
+		}
+		id, err := voiceTaskID(set.Arg(0))
+		if err != nil {
+			return nil, err
+		}
+		return r.Service.WaitVoice(ctx, id, operation.WaitOptions{Timeout: *timeout, PollInterval: *poll, OnEvent: r.Printer.Event})
+	case "cancel":
+		if len(args) != 2 {
+			return nil, usage("voice cancel requires TASK")
+		}
+		id, err := voiceTaskID(args[1])
+		if err != nil {
+			return nil, err
+		}
+		value := map[string]any{}
+		err = r.Service.API.JSON(ctx, http.MethodPost, "/api/voice/tasks/"+url.PathEscape(id)+"/cancel", nil, &value)
+		return value, err
+	case "delete":
+		if len(args) != 2 {
+			return nil, usage("voice delete requires TASK")
+		}
+		id, err := voiceTaskID(args[1])
+		if err != nil {
+			return nil, err
+		}
+		value := map[string]any{}
+		err = r.Service.API.JSON(ctx, http.MethodDelete, "/api/voice/tasks/"+url.PathEscape(id), nil, &value)
+		return value, err
+	case "download":
+		set := newFlags("voice download")
+		to := set.String("to", "", "")
+		force := set.Bool("force", false, "")
+		if err := parseFlags(set, args[1:]); err != nil || set.NArg() != 1 || *to == "" {
+			return nil, usage("voice download requires TASK --to PATH")
+		}
+		id, err := voiceTaskID(set.Arg(0))
+		if err != nil {
+			return nil, err
+		}
+		return r.Service.API.Download(ctx, "/api/voice/tasks/"+url.PathEscape(id)+"/download", *to, *force)
+	case "capabilities":
+		if len(args) != 1 {
+			return nil, usage("voice capabilities does not accept arguments")
+		}
+		return r.Service.API.Get(ctx, "/api/voice/capabilities")
+	default:
+		return nil, usage("unknown voice command %q", args[0])
+	}
+}
+
+func voiceTaskID(raw string) (string, error) {
+	if !resource.ValidServerID(raw) {
+		return "", usage("voice task id must be 32 lowercase hex characters")
+	}
+	return raw, nil
+}

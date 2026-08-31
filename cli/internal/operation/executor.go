@@ -159,6 +159,41 @@ func Execute(ctx context.Context, runtime Runtime, name string, input map[string
 		return jsonActionWithID(ctx, s, http.MethodPost, "/api/derivations/"+url.PathEscape(require("media_id"))+"/assets", body, "asset_id", "id")
 	case "media.delete":
 		return jsonAction(ctx, s, http.MethodDelete, "/api/derivations/"+url.PathEscape(require("media_id")), nil)
+	case "voice.convert":
+		submitted, err := s.SubmitVoice(ctx, require("engine"), require("source"), require("reference"), stringValue(input["request_id"], ""))
+		if err != nil {
+			return nil, err
+		}
+		taskID := stringValue(submitted["task_id"], "")
+		result := map[string]any{"submitted": submitted, "task_id": taskID}
+		if !boolValue(input["wait"]) && stringValue(input["download"], "") == "" {
+			return result, nil
+		}
+		completed, err := s.WaitVoice(ctx, taskID, WaitOptions{Timeout: durationSeconds(input["timeout_seconds"]), PollInterval: durationSeconds(input["poll_seconds"]), OnEvent: runtime.OnEvent})
+		if err != nil {
+			return nil, err
+		}
+		result["completed"] = completed
+		if destination := stringValue(input["download"], ""); destination != "" {
+			downloaded, err := s.API.Download(ctx, "/api/voice/tasks/"+url.PathEscape(taskID)+"/download", destination, boolValue(input["force"]))
+			if err != nil {
+				return nil, err
+			}
+			result["download"] = downloaded
+		}
+		return result, nil
+	case "voice.get":
+		return s.API.Get(ctx, "/api/voice/tasks/"+url.PathEscape(require("task_id")))
+	case "voice.wait":
+		return s.WaitVoice(ctx, require("task_id"), WaitOptions{Timeout: durationSeconds(input["timeout_seconds"]), PollInterval: durationSeconds(input["poll_seconds"]), OnEvent: runtime.OnEvent})
+	case "voice.cancel":
+		return jsonAction(ctx, s, http.MethodPost, "/api/voice/tasks/"+url.PathEscape(require("task_id"))+"/cancel", nil)
+	case "voice.delete":
+		return jsonAction(ctx, s, http.MethodDelete, "/api/voice/tasks/"+url.PathEscape(require("task_id")), nil)
+	case "voice.download":
+		return s.API.Download(ctx, "/api/voice/tasks/"+url.PathEscape(require("task_id"))+"/download", require("to"), boolValue(input["force"]))
+	case "gpu.status":
+		return s.API.Get(ctx, "/api/resources/gpus")
 	case "project.create":
 		return jsonActionWithID(ctx, s, http.MethodPost, "/api/video-projects", input["spec"], "project_id", "id")
 	case "project.apply":

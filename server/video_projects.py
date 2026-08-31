@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .comfy import ComfyClient, find_outputs
+from .comfy_tasks import ComfyTaskCoordinator
 from .config import Config
 from .errors import ApiError
 from .profiles import H3_MAX_DURATION_SECONDS, ProfileRegistry
@@ -65,6 +66,7 @@ class VideoProjectManager:
         mutation_lock: threading.RLock,
         *,
         command_runner: Callable[..., Any] = subprocess.run,
+        comfy_tasks: ComfyTaskCoordinator | None = None,
     ) -> None:
         self.config = config
         self.assets = assets
@@ -74,6 +76,7 @@ class VideoProjectManager:
         self.lock = mutation_lock
         self.store = JsonStore(config.data_root / "metadata" / "video-projects")
         self.command_runner = command_runner
+        self.comfy_tasks = comfy_tasks
         self._workers: dict[str, threading.Thread] = {}
         self._merge_processes: dict[str, subprocess.Popen[str]] = {}
         self._merge_cancel_events: dict[str, threading.Event] = {}
@@ -1716,15 +1719,20 @@ class VideoProjectManager:
                     })
                     self.jobs.put(job_id, job)
                     raise GenerationStopped(job_id)
-                prompt_id = self.comfy.submit(workflow, str(job["client_id"]))
+                if self.comfy_tasks is not None:
+                    job = self.comfy_tasks.schedule(job_id, workflow)
+                    prompt_id = job.get("prompt_id")
+                else:
+                    prompt_id = self.comfy.submit(workflow, str(job["client_id"]))
         except GenerationStopped:
             raise
         except Exception as error:
             job.update({"status": "failed", "message": error.message if isinstance(error, ApiError) else "generation submission failed", "updated_at": time.time()})
             self.jobs.put(job_id, job)
             raise
-        job.update({"prompt_id": prompt_id, "status": "queued", "updated_at": time.time()})
-        self.jobs.put(job_id, job)
+        if isinstance(prompt_id, str):
+            job.update({"prompt_id": prompt_id, "status": "queued", "updated_at": time.time()})
+            self.jobs.put(job_id, job)
         return job_id
 
     def _poll_job(self, job_id: str) -> dict[str, Any]:
@@ -1732,6 +1740,10 @@ class VideoProjectManager:
         if job.get("status") in TERMINAL_JOBS:
             return job
         if job.get("status") == "submitting":
+            if self.comfy_tasks is not None:
+                resource = self.comfy_tasks.queued_status(job)
+                if resource and resource.get("status") in {"queued", "running"}:
+                    return job
             now = time.time()
             started = float(job.get("submission_started_at", job.get("created_at", 0)) or 0)
             expired = now - started >= self.config.submit_reconcile_grace_seconds
@@ -1771,6 +1783,8 @@ class VideoProjectManager:
                 status["message"] = "ComfyUI completed without an expected video output"
             else:
                 job["outputs"] = [self._enrich_output(output) for output in outputs]
+        if self.comfy_tasks is not None and state in TERMINAL_JOBS:
+            self.comfy_tasks.notify_terminal(job, state)
         with self.lock:
             latest = self.jobs.get(job_id)
             if latest.get("status") in TERMINAL_JOBS:
@@ -1819,6 +1833,21 @@ class VideoProjectManager:
             if job.get("status") in TERMINAL_JOBS:
                 return
             prompt_id = job.get("prompt_id")
+            if self.comfy_tasks is not None:
+                self.comfy_tasks.cancel(job)
+                if not isinstance(prompt_id, str):
+                    job.update({
+                        "status": "canceled", "message": "canceled by project stop before ComfyUI submission",
+                        "updated_at": time.time(),
+                    })
+                    self.jobs.put(job_id, job)
+                    return
+                job.update({
+                    "status": "canceled", "message": "canceled by project stop",
+                    "updated_at": time.time(),
+                })
+                self.jobs.put(job_id, job)
+                return
         if not isinstance(prompt_id, str) and isinstance(job.get("client_id"), str):
             try:
                 prompt_id = self.comfy.find_prompt_by_client_id(str(job["client_id"]))

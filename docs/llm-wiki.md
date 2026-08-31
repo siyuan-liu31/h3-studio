@@ -11,7 +11,9 @@ Browser :3013
   scripts/start.mjs + scripts/gateway.mjs
     ├─ 页面 -> Vinext :3014
     └─ /api/* -> Python API :6020
-                       └─ ComfyUI :6006
+                       └─ GPU Resource Manager (single-card FIFO lease)
+                          ├─ ComfyUI :6006
+                          └─ Vevo2 / YingMusic persistent worker
 ```
 
 快速定位：
@@ -31,6 +33,8 @@ Browser :3013
 | H3 Base latent 断点续采 | `server/checkpoints.py`, `server/workflows.py`, `server/profiles.py` | `server/tests/test_checkpoints.py`, `tests/studio-history.test.mjs` |
 | 长视频模型与 UI | `app/video-project.ts`, `app/video-timeline.tsx`, `app/video-director-*.tsx` | `tests/video-timeline*.test.mjs`, `tests/video-director-model.test.mjs` |
 | 长视频执行、续接、合并 | `server/video_projects.py` | `server/tests/test_video_projects.py` |
+| 音色转换、换声 Worker | `server/voice.py`, `server/voice_worker.py` | `server/tests/test_voice.py` |
+| GPU 独占租约、驻留模型和队列 | `server/gpu_resources.py`, `server/comfy_tasks.py` | `server/tests/test_gpu_resources.py`, `server/tests/test_comfy_tasks.py` |
 | 启动、网关、远端运维 | `scripts/h3studio.py`, `scripts/start.mjs`, `scripts/gateway.mjs` | `scripts/ops/tests/test_h3studio.py`, `tests/gateway.test.mjs` |
 
 ## 2. 目录与入口
@@ -54,6 +58,10 @@ server/
   workflows.py                 请求解析、Prompt/工作流编译、工作流证据
   profiles.py                  内置/外部 Profile 注册表与声明校验
   comfy.py                     ComfyUI HTTP、能力检测、队列、取消、内存治理
+  comfy_tasks.py               把 Comfy prompt 完整生命期绑定到 GPU 租约
+  gpu_resources.py             Comfy/换声统一 FIFO 调度、驻留、释放与显存状态
+  voice.py                     换声持久任务、外部 Worker 进程与能力检测
+  voice_worker.py              Vevo2 FM-only / YingMusic 分离-转换-重混进程入口
   storage.py                   JSON 元数据与资产持久化
   media.py                     ffmpeg 派生、缩略图、派生资产生命周期
   media_tasks.py               H3 参考预处理后台任务、进度、取消与重启回执
@@ -200,14 +208,21 @@ Handler._generate
 
 H3 Base Profile 的 `resume` 声明包含固定调度版本、最大总步数和允许追加范围。首次任务用完整固定 sigma schedule 的前段采样；`SaveLatent` 保存采样器当前状态，预览单独解码 denoised estimate。续采使用 `LoadLatent + DisableNoise + SplitSigmas`，只执行新增 sigma 段，禁止把预览视频重新加噪。Turbo LoRA Profile 未经验证，不声明续采。
 
-### 5.3 H3 资源与内存
+### 5.3 统一 GPU 资源与内存
 
-`server/comfy.py` 从实际工作流抽取 H3 资源键：UNet、文本编码器、视频/音频 VAE、LoRA。相同键复用 ComfyUI loader 缓存；资源切换只在全局队列空闲时释放旧集合。另有空闲监控：
+`server/gpu_resources.py` 是单机单卡重任务的唯一调度器。普通生成、续采和长视频
+分段通过 `ComfyTaskCoordinator` 持有租约到 Comfy prompt 终态；Vevo2/YingMusic 进程也使用
+同一队列。一张 GPU 同时只有一个活跃重任务，策略固定为 `fifo_no_preemption`：
 
-- `H3_STUDIO_COMFY_IDLE_FREE_SECONDS`：默认 180，设 0 禁用
-- `H3_STUDIO_COMFY_IDLE_POLL_SECONDS`：默认 15
+- 队列回执包含位置和 `waiting_for_*_task` / `waiting_for_model_release` 原因；
+- 完成后记录 backend、model key、驻留时间和最后使用时间，连续同键任务复用已加载模型；
+- 切换 backend/模型前先释放旧驻留；Comfy 调 `/free`，换声终止独立 Worker 以释放 CUDA context；
+- 取消、崩溃、启动失败及空闲超时都会调用 backend 释放钩子；重启不会盲目重提之前的换声任务。
 
-释放调用 ComfyUI `/free`。不要在任务执行中卸载，也不要通过改变精度、分辨率、VAE 或采样参数换取内存。
+核心配置是 `H3_STUDIO_GPU_DEVICE_INDEX`、`H3_STUDIO_GPU_IDLE_RELEASE_SECONDS`（默认 180）和
+`H3_STUDIO_GPU_POLL_SECONDS`。旧 `H3_STUDIO_COMFY_IDLE_FREE_SECONDS` 仅作超时兼容别名。
+`GET /api/resources/gpus` 返回 nvidia-smi 显存快照、当前租约、队列和驻留模型。
+当前没有强制插队或清空队列合同。不得通过改变精度、分辨率、VAE 或采样参数换取内存。
 
 ## 6. 资产、结果与存储
 
@@ -221,8 +236,12 @@ $H3_STUDIO_DATA_ROOT/
   metadata/derivations/     剪辑派生回执
   metadata/checkpoints/     每条续采链的最新 checkpoint 清单
   metadata/video-projects/  长视频项目（由 manager 使用）
+  metadata/voice-tasks/     换声任务回执
   derivations/              裁剪、抽帧、分离音频等文件
   checkpoints/              原子保存的最新 latent（每链一个）
+  voice-results/            完成的换声 WAV；中间 stem 任务结束即清理
+  model-cache/              外部换声依赖的持久模型缓存
+  logs/                     换声 Worker stderr（stdout 专用 JSON 协议）
   thumbnails/               缩略图缓存
   tmp/                      有界临时文件
   profiles/                 外部 Profile 清单
@@ -295,6 +314,8 @@ API 路由集中在 `server/app.py::Handler`：
 | 派生媒体 | `POST /api/media/derive`, `GET /api/derivations`, `GET/PATCH/DELETE /api/derivations/:id`, `POST /api/derivations/:id/assets`（支持 `visibility=internal|library`） |
 | 分镜分析 | `POST /api/media/analyze-scenes` |
 | 长视频 | `GET/POST /api/video-projects`, `GET/PUT/DELETE /api/video-projects/:id`, `POST .../run|stop|merge`, `POST .../segments/:id/run` |
+| 换声 | `GET /api/voice/capabilities`, `GET/POST /api/voice/tasks`, `GET/DELETE /api/voice/tasks/:id`, `POST .../:id/cancel`, `GET .../:id/download` |
+| GPU 资源 | `GET /api/resources/gpus`（显存、租约、驻留模型、队列原因） |
 | 维护 | `POST /api/maintenance/gc` |
 
 除健康检查外，API Key 开启后都需认证。浏览器写操作还检查 Origin。同源 gateway 在服务端添加 Key，因此 Key 不进入前端 bundle。
@@ -304,6 +325,7 @@ API 路由集中在 `server/app.py::Handler`：
 `cli/cmd/h3ctl` 是面向 Agent 与脚本的正式 API 客户端，不替代 Python API，也不复制 `workflows.py` 的编译逻辑。命令层只解析参数，`internal/operation` 承载可供未来 workflow DAG 直接调用的原子能力。
 
 - 生成使用“提交 `job_id` + 短请求轮询”；CLI 断开不取消服务端任务，`Ctrl-C` 默认只停止本地等待。
+- `voice convert` 用两个音频 locator 提交持久换声任务，默认等待，`--detach` 只返回 task ID；`voice.*` 和 `gpu.status` 也是 Agent 原子 operation。
 - `media prepare-reference` 与 `media.prepare_reference` 共用服务端派生；本地输入先上传，CLI 本机不需要 ffmpeg。`job resume` 与 `job.resume` 只提交任务 ID、追加步数和幂等 request ID，可继续等待/下载。
 - `--control-timeout` 是控制面 HTTP 超时；transfer/media 超时独立且默认无限。`job wait --timeout` 是总等待超时。
 - 显式 Profile 先读 `/api/capabilities`，自动附加 `profile_version` 和 `manifest_sha256` 作为 `profile_digest`。
@@ -357,6 +379,7 @@ npm test
 | 工作流节点图 | `server.tests.test_workflows` + capability 测试；有条件再跑远端 dry/real job |
 | API/存储/安全 | 对应 Python 测试，必要时完整 `npm test` |
 | 长视频执行/合并 | 前端 timeline 测试 + `server.tests.test_video_projects` |
+| GPU 调度/换声 | `server.tests.test_gpu_resources` + `test_comfy_tasks` + `test_voice`；有 GPU 时用锁定上游 revision 各跑真实样本 |
 | 启动/网关/部署 | ops + gateway 测试 + 生产构建 + 健康检查 |
 
 历史 `cycle*` 测试名称保留用于回归，不代表新改动必须重复对应轮数。
@@ -372,6 +395,8 @@ npm test
   data/ metadata/ profiles/    持久数据
   logs/                        运行日志
   .tools/                      固定 Node 工具链
+  voice-runtimes/              锁定的 Amphion/YingMusic 仓库与 Python 3.10 环境
+  voice-models/                换声权重，不进入 Git/release
 ```
 
 当前进程由 `python3 scripts/h3studio.py start --port 3013 --internal-port 3014 --api-port 6020` 监督：
@@ -380,6 +405,7 @@ npm test
 - Vinext 内部服务：3014
 - 对浏览器的同源 gateway：3013
 - ComfyUI：6006
+- Vevo2/YingMusic：由 Python API 按需启动的子进程，无监听端口
 
 安全发布顺序：
 
@@ -412,6 +438,12 @@ npm test
 ### 修改长视频
 
 前端纯模型和后端 manager 都有校验。特别检查选段依赖、续接派生资产、停止/重启恢复、失败下游状态、完整输出合并与 GC 引用。
+
+### 修改换声或 GPU 资源治理
+
+同时检查上游 revision/入参、`voice_worker.py` JSON stdout 协议、当前 torchaudio
+与 YingMusic SoX remix 适配、Worker 复用/终止、
+GPU 租约终态、Comfy prompt 生命期、资产删除引用、API/CLI operation 和真实 GPU 样本。
 
 ## 12. 当前技术债与防错提示
 

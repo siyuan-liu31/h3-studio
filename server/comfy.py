@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import re
 import threading
 import time
@@ -133,6 +134,27 @@ class ComfyClient:
             }
             resources.append((class_type, json.dumps(scalar_inputs, sort_keys=True, separators=(",", ":"))))
         return tuple(sorted(resources))
+
+    def workflow_resource_key(self, workflow: dict[str, Any]) -> str:
+        """Stable resident key for every reviewed ComfyUI loader graph."""
+
+        h3 = self._h3_resource_key(workflow)
+        if h3 is not None:
+            raw = json.dumps(h3, sort_keys=True, separators=(",", ":")).encode()
+            return "h3:" + hashlib.sha256(raw).hexdigest()
+        loader_types = {
+            "CheckpointLoaderSimple", "UNETLoader", "CLIPLoader", "VAELoader",
+            "LoraLoader", "LoraLoaderModelOnly", "DualCLIPLoader",
+        }
+        resources: list[tuple[str, str]] = []
+        for node in workflow.values():
+            if not isinstance(node, dict) or str(node.get("class_type", "")) not in loader_types:
+                continue
+            inputs = node.get("inputs") if isinstance(node.get("inputs"), dict) else {}
+            scalar = {str(key): value for key, value in inputs.items() if isinstance(value, (str, int, float, bool)) or value is None}
+            resources.append((str(node["class_type"]), json.dumps(scalar, sort_keys=True, separators=(",", ":"))))
+        raw = json.dumps(sorted(resources), separators=(",", ":")).encode()
+        return "comfy:" + hashlib.sha256(raw).hexdigest()
 
     def _free_memory_locked(self) -> None:
         self.request(

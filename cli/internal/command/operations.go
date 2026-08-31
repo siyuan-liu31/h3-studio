@@ -72,9 +72,9 @@ func (r *Runner) runOperation(ctx context.Context, args []string) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		if r.Globals.RequestID != "" && (invocation.Name == "generate.image" || invocation.Name == "generate.video") {
+		if r.Globals.RequestID != "" && (invocation.Name == "generate.image" || invocation.Name == "generate.video" || invocation.Name == "voice.convert") {
 			body["request_id"] = r.Globals.RequestID
-		} else if (invocation.Name == "generate.image" || invocation.Name == "generate.video") && stringAny(body["request_id"], "") == "" {
+		} else if (invocation.Name == "generate.image" || invocation.Name == "generate.video" || invocation.Name == "voice.convert") && stringAny(body["request_id"], "") == "" {
 			body["request_id"] = newRequestID()
 		}
 		return operation.Execute(ctx, operation.Runtime{

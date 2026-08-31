@@ -70,6 +70,26 @@ class Config:
     gpu_architecture: str = "auto"
     attention_backend: str = "SageAttention"
     h3_token_risk_threshold: int = 150_000
+    # One physical GPU is shared by ComfyUI and external voice workers.  The
+    # scheduler keeps original model precision/settings and resolves pressure
+    # through exclusive leases and safe model release instead.
+    gpu_device_index: int = 0
+    gpu_idle_release_seconds: int = 180
+    gpu_poll_seconds: int = 2
+    max_active_voice_tasks: int = 16
+    voice_worker_start_seconds: int = 20 * 60
+    vevo2_root: str = ""
+    vevo2_python: str = ""
+    vevo2_revision: str = "26f6883110181f1dbfe95c70a7c7dbaf4de5f42a"
+    vevo2_model_revision: str = "2674843cbaa50aa89ee7ccaf5bb15d6ccf46c6c8"
+    yingmusic_root: str = ""
+    yingmusic_python: str = ""
+    yingmusic_revision: str = "4974a80c6044c4557059548409379f6365129f88"
+    yingmusic_model_revision: str = "da6b73938afeb7ede4c8d93ef007af2abb04ef49"
+    yingmusic_separator_config: str = ""
+    yingmusic_separator_checkpoint: str = ""
+    yingmusic_svc_config: str = ""
+    yingmusic_svc_checkpoint: str = ""
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -173,6 +193,35 @@ class Config:
             gpu_architecture=os.environ.get("H3_STUDIO_GPU_ARCHITECTURE", "auto").strip() or "auto",
             attention_backend=os.environ.get("H3_STUDIO_ATTENTION_BACKEND", "SageAttention").strip() or "SageAttention",
             h3_token_risk_threshold=_integer("H3_STUDIO_H3_TOKEN_RISK_THRESHOLD", 150_000),
+            gpu_device_index=_integer("H3_STUDIO_GPU_DEVICE_INDEX", 0, minimum=0),
+            gpu_idle_release_seconds=_integer(
+                "H3_STUDIO_GPU_IDLE_RELEASE_SECONDS",
+                _integer("H3_STUDIO_COMFY_IDLE_FREE_SECONDS", 180, minimum=0),
+                minimum=0,
+            ),
+            gpu_poll_seconds=_integer("H3_STUDIO_GPU_POLL_SECONDS", 2),
+            max_active_voice_tasks=_integer("H3_STUDIO_MAX_ACTIVE_VOICE_TASKS", 16),
+            voice_worker_start_seconds=_integer("H3_STUDIO_VOICE_WORKER_START_SECONDS", 20 * 60),
+            vevo2_root=os.environ.get("H3_STUDIO_VEVO2_ROOT", "").strip(),
+            vevo2_python=os.environ.get("H3_STUDIO_VEVO2_PYTHON", "").strip(),
+            vevo2_revision=os.environ.get(
+                "H3_STUDIO_VEVO2_REVISION", "26f6883110181f1dbfe95c70a7c7dbaf4de5f42a",
+            ).strip(),
+            vevo2_model_revision=os.environ.get(
+                "H3_STUDIO_VEVO2_MODEL_REVISION", "2674843cbaa50aa89ee7ccaf5bb15d6ccf46c6c8",
+            ).strip(),
+            yingmusic_root=os.environ.get("H3_STUDIO_YINGMUSIC_ROOT", "").strip(),
+            yingmusic_python=os.environ.get("H3_STUDIO_YINGMUSIC_PYTHON", "").strip(),
+            yingmusic_revision=os.environ.get(
+                "H3_STUDIO_YINGMUSIC_REVISION", "4974a80c6044c4557059548409379f6365129f88",
+            ).strip(),
+            yingmusic_model_revision=os.environ.get(
+                "H3_STUDIO_YINGMUSIC_MODEL_REVISION", "da6b73938afeb7ede4c8d93ef007af2abb04ef49",
+            ).strip(),
+            yingmusic_separator_config=os.environ.get("H3_STUDIO_YINGMUSIC_SEPARATOR_CONFIG", "").strip(),
+            yingmusic_separator_checkpoint=os.environ.get("H3_STUDIO_YINGMUSIC_SEPARATOR_CHECKPOINT", "").strip(),
+            yingmusic_svc_config=os.environ.get("H3_STUDIO_YINGMUSIC_SVC_CONFIG", "").strip(),
+            yingmusic_svc_checkpoint=os.environ.get("H3_STUDIO_YINGMUSIC_SVC_CHECKPOINT", "").strip(),
         )
 
     def prepare(self) -> None:
@@ -183,8 +232,12 @@ class Config:
             self.data_root / "metadata" / "asset-folders",
             self.data_root / "metadata" / "derivations",
             self.data_root / "metadata" / "checkpoints",
+            self.data_root / "metadata" / "voice-tasks",
             self.data_root / "derivations",
             self.data_root / "checkpoints",
+            self.data_root / "voice-results",
+            self.data_root / "model-cache",
+            self.data_root / "logs",
             self.data_root / "thumbnails",
             self.data_root / "tmp",
             self.comfy_input / "h3-studio",

@@ -22,11 +22,13 @@ from pathlib import Path
 from typing import Any
 
 from .comfy import ComfyClient, find_outputs
+from .comfy_tasks import ComfyTaskCoordinator
 from .checkpoints import CheckpointManager
 from .config import Config
 from .director_workflows import director_workflow_index, director_workflow_preset
 from .errors import ApiError
 from .h3_reference import estimate_packed_tokens, public_safety_policy, risk_assessment
+from .gpu_resources import GpuResourceManager
 from .multipart import MultipartPart, parse_multipart
 from .profiles import DEFAULT_REGISTRY, ProfileRegistry
 from .security import safe_filename, secure_join, validate_id
@@ -35,6 +37,7 @@ from .media import MediaService
 from .media_tasks import MediaTaskManager
 from .scene_analysis import SceneAnalysisService
 from .video_projects import VideoProjectManager
+from .voice import VoiceTaskManager
 from .workflows import ResumeSamplingPlan, compile_prompt_request, compile_workflow, parse_generation_request, workflow_evidence
 
 
@@ -54,13 +57,28 @@ class Runtime:
     media_tasks: MediaTaskManager = field(init=False)
     scene_analysis: SceneAnalysisService = field(init=False)
     checkpoints: CheckpointManager = field(init=False)
+    resources: GpuResourceManager = field(init=False)
+    voice: VoiceTaskManager = field(init=False)
+    comfy_tasks: ComfyTaskCoordinator = field(init=False)
     instance_id: str = field(init=False)
 
     def __post_init__(self) -> None:
         if "*" in self.config.cors_origins and not self.config.api_key:
             raise ValueError("wildcard CORS requires a non-empty H3 Studio API key")
+        self.resources = GpuResourceManager(
+            self.config.gpu_device_index,
+            idle_release_seconds=self.config.gpu_idle_release_seconds,
+        )
+        comfy_release = getattr(self.comfy, "free_memory", None)
+        if callable(comfy_release):
+            self.resources.register_backend("comfy", comfy_release)
+        self.comfy_tasks = ComfyTaskCoordinator(
+            self.jobs, self.comfy, self.resources,
+            poll_seconds=self.config.gpu_poll_seconds,
+        )
         self.projects = VideoProjectManager(
             self.config, self.assets, self.jobs, self.comfy, self.registry, self.mutation_lock,
+            comfy_tasks=self.comfy_tasks,
         )
         self.folders = AssetFolderStore(self.config.data_root / "metadata" / "asset-folders")
         self.media = MediaService(self.config, self.assets, self.mutation_lock)
@@ -69,6 +87,7 @@ class Runtime:
         self.checkpoints = CheckpointManager(
             self.config, self.jobs, self.assets, self.registry, self.mutation_lock,
         )
+        self.voice = VoiceTaskManager(self.config, self.assets, self.resources)
         identity_path = self.config.data_root / "metadata" / "dataset-id"
         identity_path.parent.mkdir(parents=True, exist_ok=True)
         try:
@@ -90,20 +109,13 @@ class H3StudioServer(ThreadingHTTPServer):
     def __init__(self, address: tuple[str, int], handler: type[BaseHTTPRequestHandler], runtime: Runtime):
         self.runtime = runtime
         super().__init__(address, handler)
-        starter = getattr(runtime.comfy, "start_idle_free_monitor", None)
-        if callable(starter):
-            starter(
-                runtime.config.comfy_idle_free_seconds,
-                runtime.config.comfy_idle_poll_seconds,
-            )
         runtime.checkpoints.start_gc()
 
     def server_close(self) -> None:
         self.runtime.media_tasks.stop()
         self.runtime.checkpoints.stop_gc()
-        stopper = getattr(self.runtime.comfy, "stop_idle_free_monitor", None)
-        if callable(stopper):
-            stopper()
+        self.runtime.voice.stop()
+        self.runtime.resources.stop()
         super().server_close()
 
 
@@ -393,7 +405,7 @@ class Handler(BaseHTTPRequestHandler):
                     "lora": job["workflow_evidence"]["lora"],
                 })
                 self.runtime.jobs.put(job_id, job)
-                prompt_id = self.runtime.comfy.submit(workflow, str(job["client_id"]))
+                job = self.runtime.comfy_tasks.schedule(job_id, workflow)
             except ApiError as error:
                 job.update({"status": "failed", "message": error.message, "error_code": error.code, "updated_at": time.time()})
                 self.runtime.jobs.put(job_id, job)
@@ -402,8 +414,8 @@ class Handler(BaseHTTPRequestHandler):
                 job.update({"status": "failed", "message": "generation submission failed", "error_code": "internal_error", "updated_at": time.time()})
                 self.runtime.jobs.put(job_id, job)
                 raise
-            job.update({"prompt_id": prompt_id, "status": "queued", "updated_at": time.time()})
-            self.runtime.jobs.put(job_id, job)
+            if job.get("status") == "failed":
+                raise ApiError(502, str(job.get("error_code", "comfy_rejected")), str(job.get("message", "generation submission failed")))
         self._json(
             HTTPStatus.ACCEPTED,
             {
@@ -632,7 +644,7 @@ class Handler(BaseHTTPRequestHandler):
                     "lora": job["workflow_evidence"]["lora"],
                 })
                 self.runtime.jobs.put(job_id, job)
-                prompt_id = self.runtime.comfy.submit(workflow, str(job["client_id"]))
+                job = self.runtime.comfy_tasks.schedule(job_id, workflow)
             except ApiError as error:
                 checkpoint_path.unlink(missing_ok=True)
                 job.update({"status": "failed", "message": error.message, "error_code": error.code, "checkpoint_pending": False, "updated_at": time.time()})
@@ -643,12 +655,12 @@ class Handler(BaseHTTPRequestHandler):
                 job.update({"status": "failed", "message": "resume submission failed", "error_code": "internal_error", "checkpoint_pending": False, "updated_at": time.time()})
                 self.runtime.jobs.put(job_id, job)
                 raise
-            job.update({"prompt_id": prompt_id, "status": "queued", "updated_at": time.time()})
-            self.runtime.jobs.put(job_id, job)
+            if job.get("status") == "failed":
+                raise ApiError(502, str(job.get("error_code", "comfy_rejected")), str(job.get("message", "resume submission failed")))
         self._json(HTTPStatus.ACCEPTED, {
             "job_id": job_id, "parent_job_id": latest["id"], "chain_id": chain_id,
             "steps_before": steps_before, "additional_steps": additional,
-            "steps_after": steps_after, "status": "queued",
+            "steps_after": steps_after, "status": job.get("status", "submitting"),
             "status_url": f"/api/status?id={job_id}",
         })
 
@@ -693,6 +705,21 @@ class Handler(BaseHTTPRequestHandler):
                 "url": f"/api/download?id={job_id}&index=0",
             })
         if job.get("status") == "submitting" and not job.get("prompt_id"):
+            resource_status = self.runtime.comfy_tasks.queued_status(job)
+            if resource_status and resource_status.get("status") in {"queued", "running"}:
+                return self._with_resume(job, {
+                    **timestamps, **request_evidence, "id": job_id, "job_id": job_id,
+                    "status": "submitting", "state": "submitting",
+                    "progress": int(round(float(resource_status.get("progress", 0)) * 100)),
+                    "message": resource_status.get("queue_reason") or resource_status.get("stage") or "waiting for GPU",
+                    "queue_position": resource_status.get("queue_position"),
+                    "queue_reason": resource_status.get("queue_reason"),
+                    "gpu_stage": resource_status.get("stage"),
+                    "output_type": job.get("output_type"), "parameters": job.get("parameters", {}),
+                    "prompt": job.get("prompt"), "references": job.get("references", []),
+                    "workflow_sha256": job.get("workflow_sha256"),
+                    "workflow_evidence": job.get("workflow_evidence"),
+                })
             try:
                 recovered_prompt = self.runtime.comfy.find_prompt_by_client_id(str(job.get("client_id", "")))
             except ApiError:
@@ -729,6 +756,8 @@ class Handler(BaseHTTPRequestHandler):
             comfy_status["message"] = "ComfyUI no longer knows this prompt; it may have been cleared or the service restarted"
         elif state == "error":
             state = "failed"
+        if state in {"completed", "failed", "canceled"}:
+            self.runtime.comfy_tasks.notify_terminal(job, state)
         progress = {"queued": 0, "running": 50, "completed": 100, "failed": 100}.get(state, 0)
         result: dict[str, Any] = {
             **timestamps, **request_evidence,
@@ -817,9 +846,7 @@ class Handler(BaseHTTPRequestHandler):
             if job.get("status") in {"completed", "failed", "canceled"}:
                 self._json(HTTPStatus.OK, {"id": job_id, "status": job.get("status"), "already_terminal": True})
                 return
-            prompt_id = job.get("prompt_id")
-            if isinstance(prompt_id, str) and prompt_id:
-                self.runtime.comfy.cancel(prompt_id)
+            self.runtime.comfy_tasks.cancel(job)
             job.update({"status": "canceled", "message": "canceled by user", "updated_at": time.time()})
             self.runtime.jobs.put(job_id, job)
             self.runtime.checkpoints.cleanup_staged(job)
@@ -854,6 +881,13 @@ class Handler(BaseHTTPRequestHandler):
                     derived_source = continuation.get("source_range") if isinstance(continuation, dict) else None
                     if isinstance(derived_source, dict) and derived_source.get("asset_id"):
                         referenced.add(str(derived_source["asset_id"]))
+        voice_store = getattr(self.runtime.voice, "store", None)
+        for task in voice_store.list() if voice_store is not None else []:
+            if active_only and str(task.get("status")) not in {"queued", "running", "cancelling"}:
+                continue
+            for key in ("source_asset_id", "reference_asset_id"):
+                if task.get(key):
+                    referenced.add(str(task[key]))
         return referenced
 
     def _delete_asset(self, asset_id: str) -> None:
@@ -1490,11 +1524,19 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/media/analyze-scenes":
                 self._json(HTTPStatus.OK, self.runtime.scene_analysis.analyze(self._read_json()))
                 return
+            if path == "/api/voice/tasks":
+                self._json(HTTPStatus.ACCEPTED, self.runtime.voice.submit(self._read_json()))
+                return
             segments = [segment for segment in path.split("/") if segment]
             if len(segments) == 4 and segments[:2] == ["api", "media-tasks"] and segments[3] == "cancel":
                 if self.headers.get("Content-Length", "0") != "0":
                     self._read_json()
                 self._json(HTTPStatus.ACCEPTED, self.runtime.media_tasks.cancel(segments[2]))
+                return
+            if len(segments) == 5 and segments[:3] == ["api", "voice", "tasks"] and segments[4] == "cancel":
+                if self.headers.get("Content-Length", "0") != "0":
+                    self._read_json()
+                self._json(HTTPStatus.ACCEPTED, self.runtime.voice.cancel(segments[3]))
                 return
             if path in {"/api/generate", "/generate"}:
                 self._generate()
@@ -1645,6 +1687,9 @@ class Handler(BaseHTTPRequestHandler):
             if len(segments) == 3 and segments[:2] == ["api", "jobs"]:
                 self._delete_job(segments[2])
                 return
+            if len(segments) == 4 and segments[:3] == ["api", "voice", "tasks"]:
+                self._json(HTTPStatus.OK, self.runtime.voice.delete(segments[3]))
+                return
             if len(segments) == 3 and segments[:2] == ["api", "asset-folders"]:
                 folder_id = validate_id(segments[2], "folder id")
                 with self.runtime.mutation_lock:
@@ -1713,7 +1758,21 @@ class Handler(BaseHTTPRequestHandler):
                 capabilities = self.runtime.comfy.capabilities(self.runtime.config, self.runtime.registry)
                 safety_policy = public_safety_policy()
                 safety_policy["risk_threshold"] = self.runtime.config.h3_token_risk_threshold
-                self._json(HTTPStatus.OK, {**capabilities, "h3_reference_safety_policy": safety_policy})
+                self._json(HTTPStatus.OK, {
+                    **capabilities,
+                    "h3_reference_safety_policy": safety_policy,
+                    "voice": self.runtime.voice.capabilities(),
+                    "gpu_resources": self.runtime.resources.snapshot(),
+                })
+                return
+            if path == "/api/resources/gpus":
+                self._json(HTTPStatus.OK, {"gpus": [self.runtime.resources.snapshot()]})
+                return
+            if path == "/api/voice/capabilities":
+                self._json(HTTPStatus.OK, self.runtime.voice.capabilities())
+                return
+            if path == "/api/voice/tasks":
+                self._json(HTTPStatus.OK, self.runtime.voice.list())
                 return
             if path == "/api/workflows/director":
                 self._json(HTTPStatus.OK, director_workflow_index())
@@ -1788,6 +1847,16 @@ class Handler(BaseHTTPRequestHandler):
                 return
 
             segments = [segment for segment in path.split("/") if segment]
+            if len(segments) == 4 and segments[:3] == ["api", "voice", "tasks"]:
+                self._json(HTTPStatus.OK, self.runtime.voice.get(segments[3]))
+                return
+            if len(segments) == 5 and segments[:3] == ["api", "voice", "tasks"] and segments[4] == "download":
+                self._send_file(
+                    self.runtime.voice.output_path(segments[3]), download=True,
+                    original_name=f"{segments[3]}-converted.wav",
+                    cache_control="private, no-cache",
+                )
+                return
             if len(segments) == 3 and segments[:2] == ["api", "media-tasks"]:
                 self._json(HTTPStatus.OK, self.runtime.media_tasks.get(segments[2]))
                 return
@@ -1877,6 +1946,8 @@ class Handler(BaseHTTPRequestHandler):
                             "derive_media": "POST /api/media/derive",
                             "prepare_h3_reference": "POST /api/media/derive operation=prepare_h3_reference",
                             "media_task": "GET /api/media-tasks/:id; POST /api/media-tasks/:id/cancel",
+                            "voice": "POST /api/voice/tasks; GET /api/voice/tasks/:id",
+                            "gpu_resources": "GET /api/resources/gpus",
                             "derivations": "GET /api/derivations",
                             "analyze_scenes": "POST /api/media/analyze-scenes",
                             "save_derivation": "POST /api/derivations/:id/assets",

@@ -207,6 +207,17 @@ func buildDefinitions() map[string]Definition {
 	add("media.download", []string{"media_id", "to"}, map[string]any{"media_id": idRule, "to": stringRule, "force": boolRule})
 	add("media.save", []string{"media_id"}, map[string]any{"media_id": idRule, "display_name": map[string]any{"type": "string"}, "folder_id": idRule})
 	add("media.delete", []string{"media_id"}, map[string]any{"media_id": idRule})
+	add("voice.convert", []string{"engine", "source", "reference"}, map[string]any{
+		"engine": enum("vevo2", "yingmusic"), "source": stringRule, "reference": stringRule,
+		"request_id": idRule, "wait": boolRule, "timeout_seconds": numberRule(0),
+		"poll_seconds": numberRule(0), "download": map[string]any{"type": "string"}, "force": boolRule,
+	})
+	add("voice.get", []string{"task_id"}, map[string]any{"task_id": idRule})
+	add("voice.wait", []string{"task_id"}, map[string]any{"task_id": idRule, "timeout_seconds": numberRule(0), "poll_seconds": numberRule(0)})
+	add("voice.cancel", []string{"task_id"}, map[string]any{"task_id": idRule})
+	add("voice.delete", []string{"task_id"}, map[string]any{"task_id": idRule})
+	add("voice.download", []string{"task_id", "to"}, map[string]any{"task_id": idRule, "to": stringRule, "force": boolRule})
+	add("gpu.status", nil, map[string]any{})
 	projectID := map[string]any{"project_id": idRule}
 	add("project.create", []string{"spec"}, map[string]any{"spec": map[string]any{"type": "object"}})
 	add("project.apply", []string{"project_id", "spec"}, map[string]any{"project_id": idRule, "spec": map[string]any{"type": "object"}})

@@ -202,6 +202,64 @@ class ApiIntegrationTests(unittest.TestCase):
         profiles = json.loads(body)["profiles"]
         self.assertTrue(any(profile["id"] == "anything-v5-img2img" for profile in profiles))
 
+    def test_voice_and_gpu_resource_routes_are_authenticated_and_stable(self) -> None:
+        task_id = "e" * 32
+        output = self.config.data_root / "voice-test.wav"
+        output.write_bytes(b"RIFFvoice")
+
+        class FakeVoice:
+            @staticmethod
+            def submit(data):
+                return {"id": task_id, "task_id": task_id, "status": "queued", "engine": data["engine"]}
+
+            @staticmethod
+            def get(_task_id):
+                return {"id": task_id, "task_id": task_id, "status": "completed"}
+
+            @staticmethod
+            def list():
+                return {"items": [{"id": task_id, "status": "completed"}]}
+
+            @staticmethod
+            def cancel(_task_id):
+                return {"id": task_id, "status": "canceled"}
+
+            @staticmethod
+            def capabilities():
+                return {"engines": [{"id": "vevo2", "available": True}]}
+
+            @staticmethod
+            def output_path(_task_id):
+                return output
+
+            @staticmethod
+            def stop():
+                return None
+
+        self.server.runtime.voice = FakeVoice()  # type: ignore[assignment]
+        auth = {"X-API-Key": "test-key"}
+        status, _, _ = self.request("GET", "/api/resources/gpus")
+        self.assertEqual(status, 401)
+        status, _, body = self.request("GET", "/api/resources/gpus", headers=auth)
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)["gpus"][0]["policy"], "fifo_no_preemption")
+        status, _, body = self.request("GET", "/api/voice/capabilities", headers=auth)
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)["engines"][0]["id"], "vevo2")
+        payload = json.dumps({
+            "engine": "vevo2", "source_asset_id": "a" * 32,
+            "reference_asset_id": "b" * 32,
+        }).encode()
+        status, _, body = self.request("POST", "/api/voice/tasks", payload, {**auth, "Content-Type": "application/json"})
+        self.assertEqual(status, 202)
+        self.assertEqual(json.loads(body)["task_id"], task_id)
+        status, _, body = self.request("GET", f"/api/voice/tasks/{task_id}", headers=auth)
+        self.assertEqual((status, json.loads(body)["status"]), (200, "completed"))
+        status, _, body = self.request("POST", f"/api/voice/tasks/{task_id}/cancel", headers=auth)
+        self.assertEqual((status, json.loads(body)["status"]), (202, "canceled"))
+        status, _, body = self.request("GET", f"/api/voice/tasks/{task_id}/download", headers=auth)
+        self.assertEqual((status, body), (200, b"RIFFvoice"))
+
     def test_director_workflow_presets_are_authenticated_safe_and_downloadable(self) -> None:
         status, _, _ = self.request("GET", "/api/workflows/director")
         self.assertEqual(status, 401)
@@ -1097,6 +1155,32 @@ class ApiIntegrationTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertTrue(json.loads(content)["deleted"])
         self.assertFalse(path.exists())
+
+    def test_voice_task_references_assets_until_task_is_deleted(self) -> None:
+        asset_id = "0" * 32
+        stored_name = f"{asset_id}.wav"
+        path = self.server.runtime.assets.upload_root / stored_name
+        path.write_bytes(b"RIFFasset")
+        self.server.runtime.assets.metadata.put(asset_id, {
+            "id": asset_id, "kind": "audio", "filename": "voice.wav",
+            "stored_name": stored_name, "comfy_path": f"h3-studio/{stored_name}",
+            "size": path.stat().st_size, "created_at": 1,
+        })
+        task_id = "1" * 32
+        self.server.runtime.voice.store.put(task_id, {
+            "id": task_id, "task_id": task_id, "engine": "vevo2",
+            "source_asset_id": asset_id, "reference_asset_id": asset_id,
+            "status": "failed", "created_at": 1, "updated_at": 1,
+        })
+        auth = {"X-API-Key": "test-key"}
+        status, _, body = self.request("DELETE", f"/api/assets/{asset_id}", headers=auth)
+        self.assertEqual(status, 409)
+        self.assertEqual(json.loads(body)["error"]["code"], "asset_in_use")
+        status, _, body = self.request("DELETE", f"/api/voice/tasks/{task_id}", headers=auth)
+        self.assertEqual(status, 200)
+        self.assertTrue(json.loads(body)["deleted"])
+        status, _, _ = self.request("DELETE", f"/api/assets/{asset_id}", headers=auth)
+        self.assertEqual(status, 200)
 
     def test_asset_delete_is_blocked_while_storyboard_source_range_references_it(self) -> None:
         asset_id = "9" * 32

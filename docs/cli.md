@@ -115,6 +115,43 @@ h3ctl job wait job:ID --timeout 0 --output jsonl
 h3ctl job download job:ID --to ./sunrise.mp4
 ```
 
+## Voice conversion
+
+The voice commands are CLI/Agent-only in this release. Local inputs are first
+uploaded as audio assets and the server returns a durable task ID. Conversion
+waits by default; use `--detach` to submit without keeping the CLI connected.
+
+```bash
+# Speech or singing: Amphion Vevo2 FM-only, style-preserved VC/SVC.
+h3ctl voice convert ./source.wav \
+  --reference ./reference.wav --engine vevo2 --to ./converted.wav
+
+# Song: YingMusic separation -> lead-vocal SVC -> accompaniment remix.
+h3ctl voice convert ./song.wav \
+  --reference asset:REFERENCE_ID --engine yingmusic --detach --json
+h3ctl voice status TASK_ID --json
+h3ctl voice wait TASK_ID --timeout 2h --output jsonl
+h3ctl voice download TASK_ID --to ./converted-song.wav
+```
+
+Voice inputs pass content-signature and ffprobe validation. The currently
+accepted formats are MP3, WAV, FLAC, and OGG; changing only a filename suffix
+does not bypass validation. Both engines deliver lossless WAV
+(`audio/wav`, `converted.wav`) to avoid an extra lossy encode before later
+mixing or editing.
+
+`voice cancel`, `voice delete`, `voice capabilities`, and the Agent operations
+`voice.convert|get|wait|cancel|delete|download` are also available. A local Ctrl-C
+only stops waiting; use `voice cancel` for remote cancellation. Check
+`h3ctl voice capabilities` before submitting: an unavailable engine reports
+the missing runtime/checkpoint without falling back to another model.
+
+All video/image generation and voice tasks share the server's exclusive FIFO
+GPU queue. `printf '{}\n' | h3ctl operation run gpu.status --input - --json` exposes
+memory telemetry, the active owner, resident model, queue positions and wait
+reasons. There is no force/preempt option: model switches happen only after the
+active lease finishes or is explicitly canceled.
+
 Explicit profile IDs are resolved against `/api/capabilities`, and their current `profile_version` and `manifest_sha256` are submitted automatically. A generation `request_id` is always supplied for idempotency; pass `--request-id` to reuse one across submission retries.
 
 ## Frames and other atomic media operations

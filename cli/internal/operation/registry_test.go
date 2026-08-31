@@ -146,6 +146,11 @@ func TestEveryPublishedOperationExecutesAndRejectsUnknownInput(t *testing.T) {
 		case r.URL.Path == "/api/generate":
 			w.WriteHeader(http.StatusAccepted)
 			_ = json.NewEncoder(w).Encode(map[string]any{"job_id": idB})
+		case r.URL.Path == "/api/voice/tasks" && r.Method == http.MethodPost:
+			w.WriteHeader(http.StatusAccepted)
+			_ = json.NewEncoder(w).Encode(map[string]any{"task_id": idC, "status": "queued"})
+		case strings.HasPrefix(r.URL.Path, "/api/voice/tasks/") && r.Method == http.MethodGet && !strings.HasSuffix(r.URL.Path, "/download"):
+			_ = json.NewEncoder(w).Encode(map[string]any{"task_id": idC, "status": "completed"})
 		case r.URL.Path == "/api/status":
 			_ = json.NewEncoder(w).Encode(map[string]any{"status": "completed", "job_id": idB})
 		case strings.HasSuffix(r.URL.Path, "/resume"):
@@ -210,6 +215,13 @@ func TestEveryPublishedOperationExecutesAndRejectsUnknownInput(t *testing.T) {
 		{"media.download", fmt.Sprintf(`{"media_id":%q,"to":%q}`, idC, filepath.Join(temp, "media.bin")), "GET", "/api/derivations/" + idC + "/download", "", nil, 1},
 		{"media.save", fmt.Sprintf(`{"media_id":%q}`, idC), "POST", "/api/derivations/" + idC + "/assets", "visibility", "library", 1},
 		{"media.delete", fmt.Sprintf(`{"media_id":%q}`, idC), "DELETE", "/api/derivations/" + idC, "", nil, 1},
+		{"voice.convert", fmt.Sprintf(`{"engine":"vevo2","source":"asset:%s","reference":"asset:%s"}`, idA, idB), "POST", "/api/voice/tasks", "engine", "vevo2", 1},
+		{"voice.get", fmt.Sprintf(`{"task_id":%q}`, idC), "GET", "/api/voice/tasks/" + idC, "", nil, 1},
+		{"voice.wait", fmt.Sprintf(`{"task_id":%q,"timeout_seconds":1,"poll_seconds":0.001}`, idC), "GET", "/api/voice/tasks/" + idC, "", nil, 1},
+		{"voice.cancel", fmt.Sprintf(`{"task_id":%q}`, idC), "POST", "/api/voice/tasks/" + idC + "/cancel", "", nil, 1},
+		{"voice.delete", fmt.Sprintf(`{"task_id":%q}`, idC), "DELETE", "/api/voice/tasks/" + idC, "", nil, 1},
+		{"voice.download", fmt.Sprintf(`{"task_id":%q,"to":%q}`, idC, filepath.Join(temp, "voice.wav")), "GET", "/api/voice/tasks/" + idC + "/download", "", nil, 1},
+		{"gpu.status", `{}`, "GET", "/api/resources/gpus", "", nil, 1},
 		{"project.create", `{"spec":{"title":"project"}}`, "POST", "/api/video-projects", "title", "project", 1},
 		{"project.apply", fmt.Sprintf(`{"project_id":%q,"spec":{"title":"project"}}`, idD), "PUT", "/api/video-projects/" + idD, "title", "project", 1},
 		{"project.list", `{}`, "GET", "/api/video-projects", "", nil, 1},

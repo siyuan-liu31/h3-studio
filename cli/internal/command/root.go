@@ -18,7 +18,7 @@ import (
 	"h3studio/cli/internal/output"
 )
 
-const Version = "0.3.1"
+const Version = "0.4.0"
 
 type IOStreams struct {
 	In       io.Reader
@@ -124,6 +124,8 @@ func (r *Runner) dispatch(ctx context.Context, command string, rest []string) (a
 		return r.runJob(ctx, rest)
 	case "media":
 		return r.runMedia(ctx, rest)
+	case "voice":
+		return r.runVoice(ctx, rest)
 	case "project":
 		return r.runProject(ctx, rest)
 	case "operation":
@@ -148,6 +150,7 @@ var networkCommandActions = map[string]map[string]bool{
 	"generate":   {"image": true, "video": true},
 	"job":        {"list": true, "get": true, "wait": true, "resume": true, "cancel": true, "download": true, "save": true, "workflow": true, "delete": true},
 	"media":      {"frame": true, "endpoints": true, "trim": true, "extract-audio": true, "remove-audio": true, "prepare-reference": true, "list": true, "get": true, "download": true, "save": true, "delete": true},
+	"voice":      {"convert": true, "status": true, "wait": true, "cancel": true, "delete": true, "download": true, "capabilities": true},
 	"project":    {"list": true, "create": true, "apply": true, "get": true, "delete": true, "run": true, "wait": true, "stop": true, "rerun": true, "merge": true, "download": true},
 }
 
@@ -462,6 +465,7 @@ Commands:
   generate      Generate an image or video
   job           Inspect, wait for, cancel, download, save, or delete jobs
   media         Extract frames, endpoints, trims, or audio
+  voice         Convert speech or singing timbre with GPU-safe workers
   project       Manage long-video projects
   operation     Discover and invoke stable Agent operations
   workflow      Reserved for resumable operation DAGs

@@ -29,6 +29,7 @@ ComfyUI 和模型是最大的机器相关部分。不应在未确认授权、显
 | H3 Base 视频 | 上述内容 + ComfyUI + H3/KJNodes 节点 + FL2VA 或 Ref2VA 模型 + 文本编码器 + 两个 VAE | 使用 Base Profile 生成音视频 |
 | H3 Turbo 视频 | H3 Base + 对应 Turbo LoRA | 使用默认的 4 步 Turbo Profile |
 | 图片生成/编辑 | 上述应用 + 所选图片 Profile 的节点和模型 | Z-Image、Qwen-Image、FLUX.2 或兼容 checkpoint |
+| 音色转换 | 独立 Python 3.10 环境 + Vevo2 或 YingMusic-SVC + 对应权重 | CLI/Agent 的语音、演唱或完整歌曲换声 |
 | 更佳智能分镜 | 可选 `scenedetect>=0.6.4,<0.8` | 优先使用 PySceneDetect；否则自动用 FFmpeg |
 
 只安装当前需要的 Profile。缺少某个模型不应影响其他 Profile；应用会将不完整的 Profile 显示为不可用，不会偷换成其他模型。
@@ -43,6 +44,7 @@ ComfyUI 和模型是最大的机器相关部分。不应在未确认授权、显
 | Node.js | `>=22.13` | 前端安装、构建和生产服务 |
 | npm | 随 Node.js 提供 | 按 `package-lock.json` 安装锁定依赖 |
 | FFmpeg | `ffmpeg` 和 `ffprobe` 都必须在 `PATH` | 上传校验、探测、归一化、抽帧、裁剪、音轨和长视频合并 |
+| SoX | YingMusic-SVC 需要 `sox` 在 `PATH` | 在新版 torchaudio 上保留上游 echo/reverb 重混效果 |
 | ComfyUI | `COMFY_URL` 可访问 | 实际运行 GPU 工作流 |
 
 Linux 是远程 GPU 机的主要部署环境。macOS 可运行 Studio 或通过 SSH 访问远程 ComfyUI，但 H3 是大型 GPU 工作负载，实际可用性取决于 ComfyUI、PyTorch、GPU 和所选量化模型。项目不用一个未经实机验证的统一显存数字作为保证。
@@ -54,6 +56,71 @@ python3 -m pip install "scenedetect>=0.6.4,<0.8"
 ```
 
 PySceneDetect 只用于智能分镜建议。未安装或运行失败时，后端会在同一超时预算内回退到 FFmpeg，不影响其他功能。建议把它安装到运行 H3 Studio API 的同一 Python 环境。
+
+### 音色转换运行时
+
+换声依赖不安装进 H3 Studio 主 Python；两个上游项目共用一个独立 Python 3.10
+环境，并放在不受 release 切换影响的持久目录。以下 revision 是已审核合同：
+
+```bash
+git clone https://github.com/open-mmlab/Amphion.git /persistent/voice-runtimes/Amphion
+git -C /persistent/voice-runtimes/Amphion checkout 26f6883110181f1dbfe95c70a7c7dbaf4de5f42a
+
+git clone https://github.com/GiantAILab/YingMusic-SVC.git /persistent/voice-runtimes/YingMusic-SVC
+git -C /persistent/voice-runtimes/YingMusic-SVC checkout 4974a80c6044c4557059548409379f6365129f88
+
+conda create -y -n h3-voice python=3.10
+# 先按当前 GPU/CUDA 安装彼此匹配的 torch、torchvision、torchaudio，再安装：
+conda run -n h3-voice python -m pip install -r requirements/voice-runtime.txt
+```
+
+不要直接执行 YingMusic-SVC 上游 `requirements.txt`：该文件同时声明 nightly cu126
+和固定的 torch 2.4，两组约束互相冲突，也不支持 RTX 50 系。开发机 RTX 5090
+实测使用支持 Blackwell 的 CUDA 13 PyTorch 组合；其他 GPU 应按 PyTorch 官方当前矩阵
+选择版本。项目的 `requirements/voice-runtime.txt` 只锁定经 Worker 实际导入验证的非
+PyTorch 依赖，不会替部署者偷偷替换精度或 GPU 架构。
+
+Vevo2 只调用上游 FM-only `inference_fm`，保留源音频风格/旋律并替换参考音色；
+流匹配步数保持上游的 32。首次运行会从 `RMSnow/Vevo2` 下载权重，服务端
+强制使用 model revision
+`2674843cbaa50aa89ee7ccaf5bb15d6ccf46c6c8`，且下载白名单只包含 FM 模型、
+content/style tokenizer 和 vocoder；不下载 AR/text-FM 权重或训练 optimizer。
+
+YingMusic 的 RMVPE、CAMPPlus、BigVGAN 与 Whisper 辅助模型也在 Worker 中固定到
+已审核的 Hugging Face commit，并缓存到 `H3_STUDIO_DATA_ROOT/model-cache`；运行时生成的
+YAML 只把两个可变模型名称替换为精确缓存快照，不改变任何推理参数。
+
+YingMusic-SVC 需要上游的两个权重：
+
+```bash
+conda run -n h3-voice hf download GiantAILab/YingMusic-SVC \
+  YingMusic-SVC-full.pt bs_roformer.ckpt \
+  --revision da6b73938afeb7ede4c8d93ef007af2abb04ef49 \
+  --local-dir /persistent/voice-models/yingmusic
+```
+
+将 `.env.local` 中的 `H3_STUDIO_YINGMUSIC_*_CONFIG/CHECKPOINT` 指向上述文件和
+仓库自带的 `configs/YingMusic-SVC.yml`、
+`accom_separation/ckpt/bs_roformer/config_bd_roformer.yaml`。完整歌曲模式会按上游
+Band RoFormer 分离人声与伴奏，用 YingMusic-SVC 的 100 步、FP16、F0 调节转换主唱，
+再用上游 remix 函数合回伴奏。RTX 50 系需要支持 Blackwell 的
+PyTorch/CUDA 组合；当当前 torchaudio 不再提供 `sox_effects` 时，Worker 会把该单个 API
+适配到系统 SoX，仍执行上游同样的 echo/reverb 参数和混音函数；当新版 torchaudio
+把 WAV 读写改为依赖可选 TorchCodec 时，Worker 仅把上游 WAV 读写桥接到 SoundFile。
+这两个兼容层都不改变模型、采样率或推理参数。FP16 是该上游
+公开工作流的默认，不是 H3 Studio
+的显存降级策略。模型和数据仍受各上游 license/使用条款约束；上线前由部署者确认。
+
+启动后先检查：
+
+```bash
+h3ctl voice capabilities --json
+printf '{}\n' | h3ctl operation run gpu.status --input - --json
+```
+
+显存管理采用单 GPU 独占 FIFO 租约：ComfyUI 图像/视频与换声 Worker 不会同时
+执行重任务；连续同模型任务复用驻留 Worker，切模型、取消、崩溃和空闲超时都会安全释放。
+当前不提供强制插队/清空队列；它会破坏已接受任务，需要用户另行明确授权和定义语义。
 
 ## 4. ComfyUI 、节点与 SageAttention
 

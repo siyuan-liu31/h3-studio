@@ -278,6 +278,60 @@ func TestPrepareReferenceCommandRejectsUnsafeParametersBeforeNetwork(t *testing.
 	}
 }
 
+func TestVoiceConvertWaitsAndDownloadsWithStableAssetResolution(t *testing.T) {
+	var submitted map[string]any
+	destination := filepath.Join(t.TempDir(), "converted.wav")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/api/voice/tasks":
+			_ = json.NewDecoder(r.Body).Decode(&submitted)
+			w.WriteHeader(http.StatusAccepted)
+			_ = json.NewEncoder(w).Encode(map[string]any{"task_id": testMediaID, "status": "queued"})
+		case r.Method == http.MethodGet && r.URL.Path == "/api/voice/tasks/"+testMediaID:
+			_ = json.NewEncoder(w).Encode(map[string]any{"task_id": testMediaID, "status": "completed", "progress": 100})
+		case r.Method == http.MethodGet && r.URL.Path == "/api/voice/tasks/"+testMediaID+"/download":
+			_, _ = io.WriteString(w, "RIFFvoice")
+		default:
+			t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	code, out, stderr := executeTest(t, []string{
+		"--server", server.URL, "--json", "--request-id", testProjectID,
+		"voice", "convert", "asset:" + testAssetID,
+		"--reference", "asset:" + testJobID, "--engine", "vevo2",
+		"--poll-interval", "1ms", "--to", destination,
+	}, "")
+	if code != 0 {
+		t.Fatalf("code=%d out=%s stderr=%s", code, out, stderr)
+	}
+	if !strings.Contains(stderr, "completed") {
+		t.Fatalf("voice progress missing from stderr: %s", stderr)
+	}
+	if submitted["engine"] != "vevo2" || submitted["source_asset_id"] != testAssetID || submitted["reference_asset_id"] != testJobID || submitted["request_id"] != testProjectID {
+		t.Fatalf("payload=%v", submitted)
+	}
+	if content, err := os.ReadFile(destination); err != nil || string(content) != "RIFFvoice" {
+		t.Fatalf("download=%q err=%v", content, err)
+	}
+	if !strings.Contains(out, testMediaID) {
+		t.Fatalf("task id missing from output: %s", out)
+	}
+}
+
+func TestVoiceConvertRejectsUnsafeOrContradictoryFlagsBeforeNetwork(t *testing.T) {
+	for _, args := range [][]string{
+		{"voice", "convert", "asset:" + testAssetID, "--reference", "asset:" + testJobID, "--engine", "unknown"},
+		{"voice", "convert", "asset:" + testAssetID, "--engine", "vevo2"},
+		{"voice", "convert", "asset:" + testAssetID, "--reference", "asset:" + testJobID, "--engine", "vevo2", "--detach", "--to", "x.wav"},
+	} {
+		code, _, _ := executeTest(t, args, "")
+		if code != 2 {
+			t.Fatalf("args=%v code=%d", args, code)
+		}
+	}
+}
+
 func TestResumeCommandWaitsAndDownloadsContinuedResult(t *testing.T) {
 	var payload map[string]any
 	destination := filepath.Join(t.TempDir(), "continued.mp4")
@@ -637,6 +691,7 @@ func TestLocalCommandsNeverStartOfflineCurrentSSH(t *testing.T) {
 		{args: []string{"generate", "--help"}},
 		{args: []string{"job", "wait", "--help"}},
 		{args: []string{"media", "--help"}},
+		{args: []string{"voice", "--help"}},
 		{args: []string{"project", "--help"}},
 		{args: []string{"operation", "--help"}},
 		{args: []string{"unknown"}, code: 2},
@@ -673,6 +728,7 @@ func TestConnectionDecisionCoversEveryRemoteCommandAction(t *testing.T) {
 		"generate":   {"image", "video"},
 		"job":        {"list", "get", "wait", "resume", "cancel", "download", "save", "workflow", "delete"},
 		"media":      {"frame", "endpoints", "trim", "extract-audio", "remove-audio", "prepare-reference", "list", "get", "download", "save", "delete"},
+		"voice":      {"convert", "status", "wait", "cancel", "delete", "download", "capabilities"},
 		"project":    {"list", "create", "apply", "get", "delete", "run", "wait", "stop", "rerun", "merge", "download"},
 	}
 	if len(networkCommandActions) != len(actions) {

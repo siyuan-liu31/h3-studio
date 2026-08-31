@@ -39,6 +39,97 @@ func (s *Service) Capabilities(ctx context.Context) (map[string]any, error) {
 	return s.API.Get(ctx, "/api/capabilities")
 }
 
+func (s *Service) SubmitVoice(ctx context.Context, engine, source, reference, requestID string) (map[string]any, error) {
+	if engine != "vevo2" && engine != "yingmusic" {
+		return nil, contract.NewError("invalid_argument", "voice engine must be vevo2 or yingmusic")
+	}
+	if requestID == "" {
+		raw := make([]byte, 16)
+		if _, err := rand.Read(raw); err != nil {
+			return nil, &contract.CLIError{Code: "request_id_failed", Message: "could not create voice request_id", Cause: err}
+		}
+		requestID = hex.EncodeToString(raw)
+	}
+	sourceRef, sourceEvidence, err := s.ResolveAsset(ctx, source, "voice_source")
+	if err != nil {
+		return nil, err
+	}
+	referenceRef, referenceEvidence, err := s.ResolveAsset(ctx, reference, "voice_reference")
+	if err != nil {
+		return nil, err
+	}
+	body := map[string]any{
+		"engine": engine, "source_asset_id": sourceRef["asset_id"],
+		"reference_asset_id": referenceRef["asset_id"], "request_id": requestID,
+	}
+	value := map[string]any{}
+	status, err := s.API.JSONStatus(ctx, http.MethodPost, "/api/voice/tasks", body, &value)
+	if err != nil {
+		return nil, err
+	}
+	if status != http.StatusAccepted {
+		return nil, invalidIDResponse(fmt.Sprintf("voice submission returned HTTP %d instead of 202", status))
+	}
+	taskID, err := RequireResponseID(value, "task_id", "id")
+	if err != nil {
+		return nil, err
+	}
+	value["task_id"] = taskID
+	value["request_id"] = requestID
+	value["resolved_resources"] = []any{sourceEvidence, referenceEvidence}
+	return value, nil
+}
+
+func (s *Service) WaitVoice(ctx context.Context, taskID string, options WaitOptions) (map[string]any, error) {
+	if !resource.ValidServerID(taskID) {
+		return nil, contract.NewError("invalid_argument", "voice task id must be 32 lowercase hex characters")
+	}
+	interval := options.PollInterval
+	if interval <= 0 {
+		interval = s.PollInterval
+	}
+	if interval <= 0 {
+		interval = 5 * time.Second
+	}
+	waitCtx := ctx
+	var cancel context.CancelFunc
+	if options.Timeout > 0 {
+		waitCtx, cancel = context.WithTimeout(ctx, options.Timeout)
+		defer cancel()
+	}
+	for {
+		if err := waitCtx.Err(); err != nil {
+			code, message := "interrupted", "waiting interrupted; the remote voice task was not canceled"
+			if errors.Is(err, context.DeadlineExceeded) {
+				code, message = "timeout", "timed out waiting for voice task; it is still running"
+			}
+			return nil, &contract.CLIError{Code: code, Message: message, Details: map[string]any{"task_id": taskID}, Cause: err}
+		}
+		value, err := s.API.Get(waitCtx, "/api/voice/tasks/"+url.PathEscape(taskID))
+		if err != nil {
+			return nil, err
+		}
+		status := stringValue(value["status"], "")
+		if options.OnEvent != nil {
+			options.OnEvent(map[string]any{"type": "voice_status", "task_id": taskID, "status": status, "stage": value["stage"], "progress": value["progress"], "queue_reason": value["queue_reason"]})
+		}
+		switch status {
+		case "completed":
+			return value, nil
+		case "failed":
+			return nil, &contract.CLIError{Code: "voice_failed", Message: "voice conversion failed", Details: value}
+		case "canceled", "cancelled":
+			return nil, &contract.CLIError{Code: "voice_canceled", Message: "voice conversion was canceled", Details: value}
+		case "queued", "running", "cancelling":
+		default:
+			return nil, &contract.CLIError{Code: "invalid_response", Message: "server returned unknown voice task status", Details: value}
+		}
+		if !waitDelay(waitCtx, interval) {
+			continue
+		}
+	}
+}
+
 func (s *Service) Upload(ctx context.Context, path, kind string) (map[string]any, error) {
 	if kind == "" {
 		kind = "auto"
