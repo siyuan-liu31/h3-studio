@@ -381,13 +381,54 @@ func TestHelpIncludesAgentContracts(t *testing.T) {
 
 func TestRootHelp(t *testing.T) {
 	code, out, stderr := executeTest(t, []string{"--help"}, "")
-	if code != 0 || stderr != "" || !strings.Contains(out, "operation") {
+	if code != 0 || stderr != "" || !strings.Contains(out, "operation") || !strings.Contains(out, "douyin") {
 		t.Fatalf("code=%d out=%q stderr=%q", code, out, stderr)
 	}
 	for _, forbidden := range []string{"api-key", "API key", "H3_STUDIO_API_KEY"} {
 		if strings.Contains(out, forbidden) || strings.Contains(ContextHelp, forbidden) {
 			t.Fatalf("legacy credential UX remains in help: %q", forbidden)
 		}
+	}
+}
+
+func TestDouyinCommandsAreLocalAndRejectUnsafeLinksBeforeProcess(t *testing.T) {
+	var starts atomic.Int32
+	options := connection.Options{Start: func(string, []string, io.Reader, io.Writer) (connection.Process, error) {
+		starts.Add(1)
+		return &commandFakeProcess{done: make(chan struct{})}, nil
+	}}
+	for _, args := range [][]string{{"douyin", "--help"}, {"douyin", "serve", "--help"}} {
+		var out, stderr bytes.Buffer
+		if code := executeWithConnectionOptions(context.Background(), args, IOStreams{In: strings.NewReader(""), Out: &out, Err: &stderr}, options); code != 0 || !strings.Contains(out.String(), "Swagger") {
+			t.Fatalf("args=%v code=%d out=%q stderr=%q", args, code, out.String(), stderr.String())
+		}
+	}
+	executable, _ := os.Executable()
+	var out, stderr bytes.Buffer
+	code := executeWithConnectionOptions(context.Background(), []string{"douyin", "parse", "https://example.com/private", "--yt-dlp", executable, "--json"}, IOStreams{In: strings.NewReader(""), Out: &out, Err: &stderr}, options)
+	if code != 2 || !strings.Contains(out.String(), `"code":"invalid_link"`) {
+		t.Fatalf("code=%d out=%q stderr=%q", code, out.String(), stderr.String())
+	}
+	if starts.Load() != 0 {
+		t.Fatalf("Douyin command started SSH %d times", starts.Load())
+	}
+}
+
+func TestDouyinOutputTemplateIsLocalAndNonDestructive(t *testing.T) {
+	directory := t.TempDir()
+	template, err := douyinOutputTemplate(directory, false)
+	if err != nil || !strings.HasSuffix(template, "%(uploader).80B-%(id)s.%(ext)s") {
+		t.Fatalf("template=%q err=%v", template, err)
+	}
+	file := filepath.Join(directory, "clip.mp4")
+	if err := os.WriteFile(file, []byte("existing"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := douyinOutputTemplate(file, false); err == nil {
+		t.Fatal("existing exact destination was accepted without --force")
+	}
+	if value, err := douyinOutputTemplate(file, true); err != nil || value != file {
+		t.Fatalf("force value=%q err=%v", value, err)
 	}
 }
 

@@ -49,7 +49,7 @@ func ExitCode(err error) int {
 		return 4
 	}
 	switch typed.Code {
-	case "usage", "invalid_argument", "invalid_locator", "invalid_spec":
+	case "usage", "invalid_argument", "invalid_locator", "invalid_spec", "invalid_link", "invalid_output", "invalid_browser":
 		return 2
 	case "unauthorized", "forbidden":
 		return 3

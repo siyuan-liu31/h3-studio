@@ -137,7 +137,7 @@ flowchart LR
 
 ### 面向 Agent 的 Go CLI
 
-`h3ctl` 把素材上传下载、生图生视频、任务等待与恢复、首尾帧提取、媒体派生和长视频项目拆成稳定的原子命令。它支持本地文件、远端资产 locator、机器地址可变的 SSH context，以及适合 Agent 解析的 JSON/JSONL 输出。构建、连接和完整命令说明见 [Go CLI 文档](docs/cli.md)。
+`h3ctl` 把素材上传下载、生图生视频、任务等待与恢复、首尾帧提取、媒体派生和长视频项目拆成稳定的原子命令。它还提供基于 `yt-dlp` 的隔离本地 `douyin parse|download|serve` 工具与仅回环可访问的 Swagger API，不会打开 H3 SSH context。CLI 支持本地文件、远端资产 locator、机器地址可变的 SSH context，以及适合 Agent 解析的 JSON/JSONL 输出。构建、连接、Cookie 安全和完整命令说明见 [Go CLI 文档](docs/cli.md)。
 
 > 品牌更名不影响兼容性：CLI 仍叫 `h3ctl`，现有 `H3_STUDIO_*` 环境变量、`h3-studio` 数据路径、API 合同和浏览器持久化键均保持不变。
 

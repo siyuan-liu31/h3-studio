@@ -156,7 +156,7 @@ flowchart LR
 
 ### Go CLI for Agent automation
 
-`h3ctl` exposes stable atomic commands for asset upload/download, image and video generation, resumable job waiting, endpoint-frame extraction, media derivation, and long-video projects. It supports local files, remote asset locators, SSH contexts for changing rented-machine addresses, and Agent-friendly JSON/JSONL output. See the [Go CLI guide](docs/cli.md) for build, connection, and command details.
+`h3ctl` exposes stable atomic commands for asset upload/download, image and video generation, resumable job waiting, endpoint-frame extraction, media derivation, and long-video projects. It also includes an isolated local `douyin parse|download|serve` utility backed by `yt-dlp`, with a loopback-only Swagger API; this utility never opens the H3 SSH context. The CLI supports local files, remote asset locators, SSH contexts for changing rented-machine addresses, and Agent-friendly JSON/JSONL output. See the [Go CLI guide](docs/cli.md) for build, connection, command, cookie-safety, and local API details.
 
 > Branding compatibility: the CLI remains `h3ctl`. Existing `H3_STUDIO_*` environment variables, `h3-studio` data paths, API contracts, and persisted browser keys remain unchanged.
 

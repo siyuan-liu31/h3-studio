@@ -56,6 +56,67 @@ Exit codes are: `2` invalid usage, `3` authentication/authorization, `4` missing
 
 Redirects are never followed, so requests cannot silently move to a different origin. Generation submission uses the same payload and `request_id` to retry an ambiguous network disconnect; if recovery is exhausted, the error includes that `request_id`. After acceptance, wait or download errors include the `job_id`, `request_id`, and submission receipt needed to resume safely.
 
+## Local Douyin parsing and download
+
+`h3ctl douyin` is a local utility and is independent of the H3 Studio server. It
+never opens the selected direct or SSH context. Install
+[`yt-dlp`](https://github.com/yt-dlp/yt-dlp) on the machine running `h3ctl`, or
+provide its executable with `--yt-dlp PATH` / `H3CTL_YTDLP`:
+
+```bash
+# Parse a copied share message or a public Douyin HTTPS URL.
+h3ctl douyin parse \
+  '1.71 复制打开抖音 https://v.douyin.com/...' \
+  --cookies-from-browser chrome --json
+
+# Download to a directory. yt-dlp chooses the media extension.
+h3ctl douyin download 'https://v.douyin.com/...' \
+  --to ./downloads/ --cookies-from-browser chrome --json
+```
+
+Only exact public `douyin.com` and `iesdouyin.com` HTTPS hosts are accepted;
+userinfo, explicit ports, other schemes and look-alike hosts are rejected before
+starting `yt-dlp`. Browser cookies are opt-in: `h3ctl` passes the
+`--cookies-from-browser` value directly to `yt-dlp`, does not export a cookie
+file, and does not persist cookie contents. If Douyin invalidates the session,
+open `douyin.com` in that browser, complete any login/challenge there, then run
+the command again. Do not automate password entry or distribute browser cookie
+databases.
+
+The download command does not overwrite an exact output file unless `--force`
+is supplied. Directory output uses a sanitized uploader/video-ID template. It
+returns the absolute file path, size and SHA-256 digest. Use this capability
+only for media you own or are authorized to download; it does not remove a logo
+that is already embedded in the video pixels.
+
+### Loopback Swagger API
+
+Run the same extractor as a local asynchronous API:
+
+```bash
+h3ctl douyin serve \
+  --listen 127.0.0.1:8765 \
+  --cookies-from-browser chrome
+
+open http://127.0.0.1:8765/docs
+```
+
+The server exposes:
+
+- `POST /api/parse` with `{"text":"share text or URL"}`;
+- `GET /api/tasks/{id}` for `pending`, `running`, `completed` or `failed`;
+- `GET /api/download/{token}` for an expiring, Range-capable media download;
+- `GET /openapi.json`, `GET /docs` and `GET /health`.
+
+It is deliberately restricted to loopback addresses. The default cache TTL is
+one hour, the default request limit is 30 submissions per client IP per minute,
+and at most two extractor tasks run concurrently. Duplicate URLs reuse a live
+or unexpired task. Cached files live under the platform user cache directory
+(`h3ctl/douyin`) unless `--data-dir` is set; expired managed files are removed.
+Task responses never reveal their server-side filesystem path. Swagger UI loads
+its static assets from the public `unpkg.com` CDN, while the API and OpenAPI
+document themselves remain local.
+
 ## Resource locators and transfers
 
 Commands consistently accept:

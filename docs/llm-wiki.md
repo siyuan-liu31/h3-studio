@@ -1,6 +1,6 @@
 # MiniMax H3 Video Studio LLM Wiki
 
-> 最后更新：2026-08-31（Asia/Shanghai）。面向后续开发 Agent 的代码地图；具体发布版本以 Git 和开发机 `current` 软链接为准。实现事实优先级：源码与测试 > capability/API 回执 > 本文 > 历史 evidence 文档。
+> 最后更新：2026-09-01（Asia/Shanghai）。面向后续开发 Agent 的代码地图；具体发布版本以 Git 和开发机 `current` 软链接为准。实现事实优先级：源码与测试 > capability/API 回执 > 本文 > 历史 evidence 文档。
 
 ## 1. 先看这里
 
@@ -38,6 +38,7 @@ Browser :3013
 | 音色转换、换声 Worker | `server/voice.py`, `server/voice_worker.py` | `server/tests/test_voice.py` |
 | GPU 独占租约、驻留模型和队列 | `server/gpu_resources.py`, `server/comfy_tasks.py` | `server/tests/test_gpu_resources.py`, `server/tests/test_comfy_tasks.py` |
 | 启动、网关、远端运维 | `scripts/h3studio.py`, `scripts/start.mjs`, `scripts/gateway.mjs` | `scripts/ops/tests/test_h3studio.py`, `tests/gateway.test.mjs` |
+| 本地抖音解析、下载与 Swagger API | `cli/internal/douyin/`, `cli/internal/command/douyin.go` | `cli/internal/douyin/*_test.go`, `cli/internal/command/command_test.go` |
 
 ## 2. 目录与入口
 
@@ -82,6 +83,7 @@ cli/
   cmd/h3ctl/                   Go CLI 进程入口
   internal/api/                短连接 HTTP、流式上传、原子下载和 API 错误
   internal/command/            人类命令树与 --help（薄层）
+  internal/douyin/             本地 yt-dlp 适配、缓存任务与回环 Swagger API
   internal/operation/          Agent/workflow 可复用原子能力
   internal/resource/          file:/asset:/job:/media:/h3:// locator
   internal/contract,output/    版本化 JSON/JSONL 回执与稳定退出码
@@ -93,6 +95,21 @@ tests/                         Node 合同/渲染/回归测试
 server/tests/                  Python API、工作流、存储与长视频测试
 CHANGELOG.md                   用户可见版本变化；未部署内容放在 Unreleased
 ```
+
+### 2.1 本地抖音工具边界
+
+`h3ctl douyin parse|download|serve` 只在运行 CLI 的本机执行，不创建 H3
+HTTP 客户端，也不打开当前 SSH context。`internal/douyin` 是受控的 `yt-dlp`
+进程适配层：只接受精确白名单上的 Douyin HTTPS host，用 `--` 终止参数解析，
+限制子进程输出和运行时间，并只在用户显式提供 `--cookies-from-browser`
+时读取浏览器会话。原始签名视频下载 URL 不进入解析回执，Cookie 内容不落盘。
+
+`douyin serve` 是 CLI 内部的独立 HTTP 服务，不并入 Python `server/app.py` 的 H3 API
+合同。它只允许监听 loopback，对 `POST /api/parse` 做请求体上限、IP 限流、
+URL 去重、有界并发和 TTL 缓存；`GET /api/tasks/{id}` 不暴露本地路径，
+`GET /api/download/{token}` 只能访问受管缓存目录内的限时文件。`/docs` 是 Swagger UI，
+`/openapi.json` 是实时 OpenAPI 合同。改动路由、任务字段或过期语义时，必须同步修改
+OpenAPI、`docs/cli.md` 和 API 测试。
 
 ## 3. 前端状态模型
 

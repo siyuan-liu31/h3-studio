@@ -130,6 +130,8 @@ func (r *Runner) dispatch(ctx context.Context, command string, rest []string) (a
 		return r.runProject(ctx, rest)
 	case "operation":
 		return r.runOperation(ctx, rest)
+	case "douyin":
+		return r.runDouyin(ctx, rest)
 	case "workflow":
 		return r.runWorkflow(rest)
 	case "completion":
@@ -165,7 +167,7 @@ func (r *Runner) commandNeedsConnection(command string, args []string) bool {
 		return (len(args) == 1 && args[0] == "list") || (len(args) == 2 && args[0] == "show" && (args[1] == "video" || args[1] == "image"))
 	case "profile":
 		return (len(args) == 1 && args[0] == "list") || (len(args) == 2 && args[0] == "show")
-	case "version", "context", "workflow", "completion":
+	case "version", "context", "workflow", "completion", "douyin":
 		return false
 	case "operation":
 		if len(args) == 0 || args[0] == "list" || args[0] == "schema" {
@@ -371,6 +373,8 @@ func commandFlagNeedsValue(top, sub, arg string) bool {
 		"additional-steps": true, "max-short-edge": true, "max-long-edge": true, "max-duration": true,
 		"audio": true, "fit": true, "alignment": true, "pad-mode": true, "fps": true, "preset": true,
 		"ssh-target": true, "ssh-port": true, "remote-api-port": true,
+		"cookies-from-browser": true, "yt-dlp": true, "listen": true, "data-dir": true,
+		"cache-ttl": true, "rate-limit": true,
 	}
 	if name == "server" {
 		return (top == "" && sub == "") || (top == "context" && (sub == "add" || sub == "update"))
@@ -468,6 +472,7 @@ Commands:
   voice         Convert speech or singing timbre with GPU-safe workers
   project       Manage long-video projects
   operation     Discover and invoke stable Agent operations
+  douyin        Parse or download public Douyin media locally; serve Swagger API
   workflow      Reserved for resumable operation DAGs
   completion    Reserved for shell completion
 
@@ -486,7 +491,7 @@ Global flags:
   --quiet                 Suppress progress on stderr
 
 Environment:
-  H3_STUDIO_URL, H3CTL_CONFIG
+  H3_STUDIO_URL, H3CTL_CONFIG, H3CTL_YTDLP
 
 Resource locators:
   ./file.png | file:///abs/file.png | asset:ID | job:ID#INDEX | media:ID

@@ -137,7 +137,7 @@ flowchart LR
 
 ### Agent 自動化向け Go CLI
 
-`h3ctl` は、アセットのアップロード／ダウンロード、画像・動画生成、再開可能なタスク待機、先頭・末尾フレーム抽出、メディア派生、長尺動画プロジェクトを安定した原子コマンドとして提供します。ローカルファイル、リモートアセット locator、レンタルマシンのアドレス変更に対応する SSH context、Agent 向け JSON/JSONL 出力を利用できます。ビルド、接続、全コマンドは [Go CLI ガイド](docs/cli.md) を参照してください。
+`h3ctl` は、アセットのアップロード／ダウンロード、画像・動画生成、再開可能なタスク待機、先頭・末尾フレーム抽出、メディア派生、長尺動画プロジェクトを安定した原子コマンドとして提供します。さらに、`yt-dlp` ベースの分離されたローカル `douyin parse|download|serve` ツールと、ループバックのみで利用できる Swagger API を含みます。このツールは H3 SSH context を開きません。CLI はローカルファイル、リモートアセット locator、レンタルマシンのアドレス変更に対応する SSH context、Agent 向け JSON/JSONL 出力を利用できます。ビルド、接続、Cookie の安全性、全コマンドは [Go CLI ガイド](docs/cli.md) を参照してください。
 
 リポジトリには、ローカル H3 プロンプトコンパイラー skill が 1 つだけ付属しています。入口は [`skills/h3-ref2va-prompt-compiler`](skills/h3-ref2va-prompt-compiler/SKILL.md) です。
 
