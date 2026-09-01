@@ -141,7 +141,9 @@ VIDEO_SHARED = (
     "RandomNoise", "BasicGuider", "KSamplerSelect", "BasicScheduler",
     "SamplerCustomAdvanced", "VAEDecode", "VAEDecodeAudio", "CreateVideo", "SaveVideo",
 )
-VIDEO_RESUME_NODES = ("SplitSigmas", "SaveLatent", "LoadLatent", "DisableNoise")
+VIDEO_RESUME_NODES = (
+    "SplitSigmas", "H3StudioSaveLatent", "H3StudioLoadLatent", "DisableNoise",
+)
 IMAGE_SHARED = ("CheckpointLoaderSimple", "CLIPTextEncode", "KSampler", "VAEDecode", "SaveImage")
 FLOW_IMAGE_SHARED = (
     "UNETLoader", "CLIPLoader", "VAELoader", "ModelSamplingAuraFlow",
@@ -330,7 +332,17 @@ BUILTIN_PROFILES = (
         limits={"duration": [5, H3_MAX_DURATION_SECONDS], "references": 2, "steps": [4, 50], "lora_strength": [0, 2], "denoise": [0.05, 1]}, compiler="h3_fl", sampling_mode="turbo4",
     ),
     _profile(
-        id="minimax-h3-fl2va-base", version="1.1", display_name="MiniMax H3 FL2VA · Base 20 (no Turbo)",
+        id="minimax-h3-fl2va-base", version="1.2", display_name="MiniMax H3 FL2VA · Base 20 Direct (no Turbo)",
+        output_type="video", input_modalities=("text", "image"),
+        required_nodes=VIDEO_SHARED + ("MiniMaxH3ImageToVideo", "LoadImage"),
+        required_models=("fl_model", "text_encoder", "video_vae", "audio_vae"),
+        parameter_schema={"duration": "number", "width": "integer", "height": "integer", "steps": "integer", "denoise": "number", "seed": "integer"},
+        defaults={"duration": 124 / 24, "steps": 20, "denoise": 1.0},
+        limits={"duration": [5, H3_MAX_DURATION_SECONDS], "references": 2, "steps": [4, 50], "denoise": [0.05, 1]}, compiler="h3_fl", sampling_mode="base",
+        use_notice="Default Base profile: render the video directly; no checkpoint is placed on the critical path.",
+    ),
+    _profile(
+        id="minimax-h3-fl2va-base-resumable", version="1.0", display_name="MiniMax H3 FL2VA · Base Resumable (opt-in)",
         output_type="video", input_modalities=("text", "image"),
         required_nodes=VIDEO_SHARED + VIDEO_RESUME_NODES + ("MiniMaxH3ImageToVideo", "LoadImage"),
         required_models=("fl_model", "text_encoder", "video_vae", "audio_vae"),
@@ -338,6 +350,7 @@ BUILTIN_PROFILES = (
         defaults={"duration": 124 / 24, "steps": 20, "denoise": 1.0},
         limits={"duration": [5, H3_MAX_DURATION_SECONDS], "references": 2, "steps": [4, 50], "denoise": [0.05, 1]}, compiler="h3_fl", sampling_mode="base",
         resume={"supported": True, "schedule_version": "h3-simple-fixed/v1", "max_total_steps": 50, "additional_steps": [1, 46]},
+        use_notice="Opt-in continuation profile; requires the bundled H3 Studio checkpoint nodes in ComfyUI.",
     ),
     _profile(
         id="minimax-h3-ref2va", version="1.2", display_name="MiniMax H3 Ref2VA · Turbo LoRA（4 步推荐）",
@@ -349,7 +362,17 @@ BUILTIN_PROFILES = (
         limits={"duration": [5, H3_MAX_DURATION_SECONDS], "references": 6, "steps": [4, 50], "lora_strength": [0, 2], "denoise": [0.05, 1]}, compiler="h3_ref", sampling_mode="turbo4",
     ),
     _profile(
-        id="minimax-h3-ref2va-base", version="1.1", display_name="MiniMax H3 Ref2VA · Base 20 (no Turbo)",
+        id="minimax-h3-ref2va-base", version="1.2", display_name="MiniMax H3 Ref2VA · Base 20 Direct (no Turbo)",
+        output_type="video", input_modalities=("text", "image", "video", "audio"),
+        required_nodes=VIDEO_SHARED + ("MiniMaxH3ReferenceToVideo", "LoadImage", "LoadVideo", "LoadAudio", "GetVideoComponents"),
+        required_models=("ref_model", "text_encoder", "video_vae", "audio_vae"),
+        parameter_schema={"duration": "number", "width": "integer", "height": "integer", "steps": "integer", "ref_image_size": "string", "denoise": "number", "seed": "integer"},
+        defaults={"duration": 124 / 24, "steps": 20, "ref_image_size": "match", "denoise": 1.0},
+        limits={"duration": [5, H3_MAX_DURATION_SECONDS], "references": 6, "steps": [4, 50], "denoise": [0.05, 1]}, compiler="h3_ref", sampling_mode="base",
+        use_notice="Default Base profile: render the video directly; no checkpoint is placed on the critical path.",
+    ),
+    _profile(
+        id="minimax-h3-ref2va-base-resumable", version="1.0", display_name="MiniMax H3 Ref2VA · Base Resumable (opt-in)",
         output_type="video", input_modalities=("text", "image", "video", "audio"),
         required_nodes=VIDEO_SHARED + VIDEO_RESUME_NODES + ("MiniMaxH3ReferenceToVideo", "LoadImage", "LoadVideo", "LoadAudio", "GetVideoComponents"),
         required_models=("ref_model", "text_encoder", "video_vae", "audio_vae"),
@@ -357,6 +380,7 @@ BUILTIN_PROFILES = (
         defaults={"duration": 124 / 24, "steps": 20, "ref_image_size": "match", "denoise": 1.0},
         limits={"duration": [5, H3_MAX_DURATION_SECONDS], "references": 6, "steps": [4, 50], "denoise": [0.05, 1]}, compiler="h3_ref", sampling_mode="base",
         resume={"supported": True, "schedule_version": "h3-simple-fixed/v1", "max_total_steps": 50, "additional_steps": [1, 46]},
+        use_notice="Opt-in continuation profile; requires the bundled H3 Studio checkpoint nodes in ComfyUI.",
     ),
     _profile(
         id="z-image-turbo-bf16-t2i", version="1.0",

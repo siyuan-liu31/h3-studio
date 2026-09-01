@@ -7,10 +7,12 @@
 ### Added
 
 - `h3ctl` 新增纯本地 `douyin parse|download|serve` 能力：通过 `yt-dlp` 解析或下载用户授权的抖音媒体，可显式读取本机浏览器会话；内置回环异步 API、Swagger/OpenAPI 文档、限时 token 下载、Range、限流、去重缓存与 SSRF 防护，不触发原有 H3 SSH context。
+- 新增 H3 专用 `H3StudioSaveLatent` / `H3StudioLoadLatent` ComfyUI 节点，支持视频/音频 `NestedTensor` 检查点的版本化保存与恢复。
 
 ### Changed
 
 - 项目对外品牌更名为 `MiniMax H3 Video Studio`，GitHub 默认 README 改为英文并保留中、日文入口；CLI `h3ctl`、`H3_STUDIO_*` 环境变量、数据路径、API 合同和持久化键保持兼容。
+- H3 Base 默认改为 Direct Profile，优先保存成片；续采改为显式 `-base-resumable` Profile，检查点只在 `SaveVideo` 落盘后 best-effort 保存，失败不再将已生成视频判为任务失败。
 
 ## [0.4.0] - 2026-08-31
 

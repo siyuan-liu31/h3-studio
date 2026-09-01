@@ -236,10 +236,20 @@ On `sm120 + SageAttention`, the server also evaluates the complete Ref2VA packed
 
 ## Resumable Base sampling
 
-Only H3 Base Profiles that advertise `resume.supported=true` can continue from a latent checkpoint. Turbo LoRA Profiles remain unsupported until their behavior beyond the tested schedule is validated.
+The default Base Profiles are Direct Profiles: `minimax-h3-fl2va-base` and
+`minimax-h3-ref2va-base` render the requested video without putting checkpoint
+I/O on the critical path. They intentionally advertise `resume.supported=false`.
+
+Continuation is opt-in through `minimax-h3-fl2va-base-resumable` and
+`minimax-h3-ref2va-base-resumable`. These Profiles require the bundled
+`H3StudioSaveLatent` / `H3StudioLoadLatent` ComfyUI nodes. The save node supports
+H3's video/audio `NestedTensor`, runs after `SaveVideo`, and is best effort: a
+checkpoint write failure leaves the video job completed and reports
+`checkpoint_error` / `can_resume=false`. Turbo LoRA Profiles remain unsupported
+until their behavior beyond the tested schedule is validated.
 
 ```bash
-h3ctl generate video --profile minimax-h3-fl2va-base --steps 7 \
+h3ctl generate video --profile minimax-h3-fl2va-base-resumable --steps 7 \
   --mode t2v --prompt 'A slow cinematic sunrise'
 
 h3ctl job resume job:ID --additional-steps 3
@@ -247,7 +257,7 @@ h3ctl job resume job:ID --additional-steps 3 \
   --wait --poll-interval 5s --download ./continued.mp4
 ```
 
-The server resolves any task ID in a continuation chain to its latest valid checkpoint. A resume creates a new immutable result, executes only the requested new sigma segment, and replaces the chain checkpoint only after the new latent is stored and verified. The prior result and checkpoint survive failure or cancellation. Profile identity, model, LoRA state, prompt, seed, sampling settings, shape, and reference hashes are validated; a mismatch fails explicitly and never falls back to regeneration.
+The server resolves any task ID in a continuation chain to its latest valid checkpoint. A resume creates a new immutable result, executes only the requested new sigma segment, and replaces the chain checkpoint only after the new latent is stored and verified. The prior result and checkpoint survive failure or cancellation. Profile identity, model, LoRA state, prompt, seed, sampling settings, shape, and reference hashes are validated; a mismatch fails explicitly and never falls back to regeneration. Operators install `comfy_nodes/h3_studio_checkpoint` as `ComfyUI/custom_nodes/h3_studio_checkpoint` and restart ComfyUI before enabling the resumable Profiles.
 
 Checkpoint retention is configured server-side (24–72 hours, default 48). Job list and status receipts expose current/max steps, latest task, expiry, `can_resume`, and a truthful unavailable reason. Only one continuation may run per chain.
 

@@ -164,7 +164,9 @@ UI 同时显示“请求 5 秒 → 实际 124 帧 / 约 5.17 秒”。Prompt 的
 
 profile 在启动时用 `/object_info` 和模型列表验证。文件缺失或节点版本不兼容时，capability 返回 `unavailable`，前端禁用该选项并显示原因。高级面板可以覆盖已声明可覆盖的 Seed、步数和 LoRA 模型强度；后端按 Profile 边界校验。采样器、scheduler、sigma shift 等只有在专门验证过的 profile 中才开放。
 
-内置 H3 Profile 分为两套采样合同：历史兼容标识 `turbo4` 使用开发机的 LightX2V Turbo LoRA、`sa_solver` 与 `simple`，4 步是默认/推荐值而非前端硬锁，步数和 `strength_model` 均在 Profile 边界内独立可调；`base` 完全绕过 LoRA Loader，使用当前 ComfyUI 官方模板的 20-step `res_multistep` + `simple` 基线，并允许调步数。这里的 Base 仅表示关闭 Turbo LoRA；发布 checkpoint 本身仍是 CFG-distilled，不能称为 non-distilled。
+内置 H3 Profile 分为两套采样合同：历史兼容标识 `turbo4` 使用开发机的 LightX2V Turbo LoRA、`sa_solver` 与 `simple`，4 步是默认/推荐值而非前端硬锁，步数和 `strength_model` 均在 Profile 边界内独立可调；`base` 完全绕过 LoRA Loader，使用当前 ComfyUI 官方模板的 20-step `res_multistep` + `simple` 基线，并允许调步数。Base 默认解析到 Direct Profile，不在成片关键路径上写断点；显式 `-base-resumable` Profile 才使用 H3 专用 NestedTensor 检查点节点。这里的 Base 仅表示关闭 Turbo LoRA；发布 checkpoint 本身仍是 CFG-distilled，不能称为 non-distilled。
+
+续采工作流中，`H3StudioSaveLatent` 同时依赖采样器当前状态和 `SaveVideo` 返回值，因此只能在 MP4 已落盘后执行。它将 H3 的视频/音频 `NestedTensor` 以版本化 safetensors 键保存，且所有写入失败都降级为无检查点回执；服务端保留 completed 视频并设置 `checkpoint_error`，不得将成片改判为失败。
 
 ## 6. 提示词编译器
 

@@ -225,7 +225,7 @@ Handler._generate
 
 `server/workflows.py::compile_workflow` 按 compiler 分发到 H3、checkpoint、Z-Image、Qwen 或 FLUX.2 构造器。不要让外部清单直接提供任意 ComfyUI graph；新增 compiler 必须写受控构造器和测试。
 
-H3 Base Profile 的 `resume` 声明包含固定调度版本、最大总步数和允许追加范围。首次任务用完整固定 sigma schedule 的前段采样；`SaveLatent` 保存采样器当前状态，预览单独解码 denoised estimate。续采使用 `LoadLatent + DisableNoise + SplitSigmas`，只执行新增 sigma 段，禁止把预览视频重新加噪。Turbo LoRA Profile 未经验证，不声明续采。
+H3 Base 默认 Profile（`minimax-h3-*-base`）是 Direct：按请求步数直接解码并保存视频，不声明 `resume`。只有显式 `minimax-h3-*-base-resumable` Profile 包含固定调度版本、最大总步数和允许追加范围。首次任务用完整固定 sigma schedule 的前段采样；`H3StudioSaveLatent` 保存 H3 视频/音频 NestedTensor 采样状态，预览单独解码 denoised estimate。该节点依赖 `SaveVideo` 输出并采用 best-effort 语义：MP4 必须先落盘，检查点失败只记录 `checkpoint_error`。续采使用 `H3StudioLoadLatent + DisableNoise + SplitSigmas`，只执行新增 sigma 段，禁止把预览视频重新加噪。Turbo LoRA Profile 未经验证，不声明续采。自定义节点源码位于 `comfy_nodes/h3_studio_checkpoint/`，部署时安装到 ComfyUI `custom_nodes` 并重启 ComfyUI。
 
 ### 5.3 统一 GPU 资源与内存
 

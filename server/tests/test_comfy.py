@@ -44,8 +44,8 @@ def full_object_info():
         "KSampler",
         "SaveImage",
         "SplitSigmas",
-        "SaveLatent",
-        "LoadLatent",
+        "H3StudioSaveLatent",
+        "H3StudioLoadLatent",
         "DisableNoise",
     }
     info = {name: {} for name in names}
@@ -323,6 +323,22 @@ class CapabilityTests(unittest.TestCase):
             self.assertTrue(value["video"]["modes"]["text"])
             self.assertTrue(value["video"]["modes"]["fl2va"])
             self.assertTrue(value["video"]["modes"]["ref2va"])
+
+    def test_direct_base_stays_available_without_optional_checkpoint_nodes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            client = ComfyClient("http://unused")
+            info = full_object_info()
+            info.pop("H3StudioSaveLatent")
+            info.pop("H3StudioLoadLatent")
+            with patch.object(client, "object_info", return_value=info):
+                by_id = {
+                    profile["id"]: profile
+                    for profile in client.capabilities(config(Path(directory)))["profiles"]
+                }
+            self.assertTrue(by_id["minimax-h3-fl2va-base"]["available"])
+            self.assertTrue(by_id["minimax-h3-ref2va-base"]["available"])
+            self.assertFalse(by_id["minimax-h3-fl2va-base-resumable"]["available"])
+            self.assertFalse(by_id["minimax-h3-ref2va-base-resumable"]["available"])
 
     def test_sampling_profiles_require_their_sampler_and_scheduler_choices(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

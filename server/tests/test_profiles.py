@@ -74,7 +74,9 @@ class ProfileRegistryTests(unittest.TestCase):
         self.assertIn("required_models", public)
         for identifier in (
             "minimax-h3-fl2va", "minimax-h3-fl2va-base",
+            "minimax-h3-fl2va-base-resumable",
             "minimax-h3-ref2va", "minimax-h3-ref2va-base",
+            "minimax-h3-ref2va-base-resumable",
         ):
             with self.subTest(identifier=identifier):
                 video = DEFAULT_REGISTRY.get(identifier)
@@ -267,7 +269,9 @@ class ProfileRegistryTests(unittest.TestCase):
     def test_builtin_base_profiles_expose_adjustable_steps_without_turbo_lora(self) -> None:
         for identifier, compiler in (
             ("minimax-h3-fl2va-base", "h3_fl"),
+            ("minimax-h3-fl2va-base-resumable", "h3_fl"),
             ("minimax-h3-ref2va-base", "h3_ref"),
+            ("minimax-h3-ref2va-base-resumable", "h3_ref"),
         ):
             with self.subTest(identifier=identifier):
                 profile = DEFAULT_REGISTRY.get(identifier)
@@ -277,6 +281,26 @@ class ProfileRegistryTests(unittest.TestCase):
                 self.assertEqual(profile.limits["steps"], [4, 50])
                 self.assertNotIn("LoraLoaderModelOnly", profile.required_nodes)
                 self.assertFalse(any(role.endswith("_lora") for role in profile.required_models))
+
+    def test_direct_base_is_default_and_resumable_base_requires_h3_checkpoint_nodes(self) -> None:
+        profiles = DEFAULT_REGISTRY.all()
+        for compiler, direct_id, resumable_id in (
+            ("h3_fl", "minimax-h3-fl2va-base", "minimax-h3-fl2va-base-resumable"),
+            ("h3_ref", "minimax-h3-ref2va-base", "minimax-h3-ref2va-base-resumable"),
+        ):
+            with self.subTest(compiler=compiler):
+                direct = DEFAULT_REGISTRY.get(direct_id)
+                resumable = DEFAULT_REGISTRY.get(resumable_id)
+                self.assertFalse(direct.resume)
+                self.assertNotIn("H3StudioSaveLatent", direct.required_nodes)
+                self.assertTrue(resumable.resume["supported"])
+                self.assertIn("H3StudioSaveLatent", resumable.required_nodes)
+                self.assertIn("H3StudioLoadLatent", resumable.required_nodes)
+                base_candidates = [
+                    item for item in profiles
+                    if item.output_type == "video" and item.compiler == compiler and item.sampling_mode == "base"
+                ]
+                self.assertEqual(base_candidates[0].id, direct_id)
 
     def test_builtin_turbo_profiles_default_to_four_but_allow_adjustable_steps_and_strength(self) -> None:
         for identifier in ("minimax-h3-fl2va", "minimax-h3-ref2va"):

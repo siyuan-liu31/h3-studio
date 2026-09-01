@@ -43,7 +43,7 @@ def _find_latent_output(record: dict[str, Any]) -> dict[str, str] | None:
                 visit(child)
 
     outputs = record.get("outputs", {})
-    # Node 19 is the reviewed SaveLatent node in every resumable H3 graph.
+    # Node 19 is the reviewed H3StudioSaveLatent node in every resumable H3 graph.
     # Do not accept an unrelated latent emitted by another node.
     visit(outputs.get("19") if isinstance(outputs, dict) else None)
     return found[-1] if found else None

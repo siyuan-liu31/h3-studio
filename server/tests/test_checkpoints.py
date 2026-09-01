@@ -22,7 +22,7 @@ class ResumeWorkflowTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             config = make_config(Path(temporary))
             config.prepare()
-            profile = DEFAULT_REGISTRY.get("minimax-h3-fl2va-base")
+            profile = DEFAULT_REGISTRY.get("minimax-h3-fl2va-base-resumable")
             request = {
                 "output_type": "video", "profile_id": profile.id,
                 "profile_version": profile.version, "profile_digest": profile.digest(),
@@ -34,8 +34,9 @@ class ResumeWorkflowTests(unittest.TestCase):
             self.assertEqual(initial["12"]["inputs"]["steps"], 50)
             self.assertEqual(initial["18"]["inputs"]["step"], 7)
             self.assertEqual(initial["13"]["inputs"]["sigmas"], ["18", 0])
-            self.assertEqual(initial["19"]["class_type"], "SaveLatent")
+            self.assertEqual(initial["19"]["class_type"], "H3StudioSaveLatent")
             self.assertEqual(initial["19"]["inputs"]["samples"], ["13", 0])
+            self.assertEqual(initial["19"]["inputs"]["video_done"], ["17", 0])
             self.assertEqual(initial["14"]["inputs"]["samples"], ["13", 1])
             resumed_spec = replace(spec, steps=10)
             resumed = compile_workflow(resumed_spec, config, "b" * 32, ResumeSamplingPlan(
@@ -45,8 +46,27 @@ class ResumeWorkflowTests(unittest.TestCase):
             self.assertEqual(resumed["9"]["class_type"], "DisableNoise")
             self.assertEqual(resumed["18"]["inputs"]["step"], 7)
             self.assertEqual(resumed["20"]["inputs"]["step"], 3)
+            self.assertEqual(resumed["21"]["class_type"], "H3StudioLoadLatent")
             self.assertEqual(resumed["13"]["inputs"]["latent_image"], ["21", 0])
             self.assertEqual(resumed["13"]["inputs"]["sigmas"], ["20", 0])
+
+    def test_default_base_profile_is_direct_and_has_no_checkpoint_critical_path(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            config = make_config(Path(temporary))
+            config.prepare()
+            profile = DEFAULT_REGISTRY.get("minimax-h3-fl2va-base")
+            self.assertFalse(CheckpointManager.profile_policy(profile))
+            spec = parse_generation_request({
+                "output_type": "video", "profile_id": profile.id,
+                "profile_version": profile.version, "profile_digest": profile.digest(),
+                "director_mode": "t2v", "prompt": "A cinematic sunrise.",
+                "parameters": {"steps": 20, "duration": 5, "aspect_ratio": "16:9", "seed": 42},
+            }, lambda _id: {}, DEFAULT_REGISTRY)
+            workflow = compile_workflow(spec, config, "f" * 32)
+            self.assertEqual(workflow["17"]["class_type"], "SaveVideo")
+            self.assertNotIn("18", workflow)
+            self.assertNotIn("19", workflow)
+            self.assertEqual(workflow["14"]["inputs"]["samples"], ["13", 0])
 
 
 class CheckpointStorageTests(unittest.TestCase):
@@ -59,7 +79,7 @@ class CheckpointStorageTests(unittest.TestCase):
         self.jobs = JobStore(self.config.data_root / "metadata" / "jobs")
         self.assets = AssetStore(self.config)
         self.manager = CheckpointManager(self.config, self.jobs, self.assets, DEFAULT_REGISTRY, __import__("threading").RLock())
-        profile = DEFAULT_REGISTRY.get("minimax-h3-fl2va-base")
+        profile = DEFAULT_REGISTRY.get("minimax-h3-fl2va-base-resumable")
         self.job_id = "a" * 32
         self.job = {
             "id": self.job_id, "status": "completed", "chain_id": self.job_id,
@@ -155,7 +175,7 @@ class ResumeApiTests(unittest.TestCase):
         return self.request("GET", f"/api/status?id={job_id}")[1]
 
     def test_any_chain_id_uses_latest_checkpoint_and_chain_rejects_parallel_resume(self) -> None:
-        profile = DEFAULT_REGISTRY.get("minimax-h3-fl2va-base")
+        profile = DEFAULT_REGISTRY.get("minimax-h3-fl2va-base-resumable")
         status, created = self.request("POST", "/api/generate", {
             "output_type": "video", "profile_id": profile.id,
             "profile_version": profile.version, "profile_digest": profile.digest(),
@@ -164,7 +184,7 @@ class ResumeApiTests(unittest.TestCase):
         })
         self.assertEqual(status, 202)
         root_id = created["job_id"]
-        self.assertEqual(self.fake.workflow["19"]["class_type"], "SaveLatent")
+        self.assertEqual(self.fake.workflow["19"]["class_type"], "H3StudioSaveLatent")
         completed = self._complete(root_id, "root")
         self.assertTrue(completed["can_resume"])
         status, resumed = self.request("POST", f"/api/jobs/{root_id}/resume", {"additional_steps": 2, "request_id": "resume-request-1"})
@@ -184,6 +204,54 @@ class ResumeApiTests(unittest.TestCase):
         self.assertEqual(status, 202)
         self.assertEqual(continued["parent_job_id"], child_id)
         self.assertEqual((continued["steps_before"], continued["steps_after"]), (9, 12))
+
+    def test_checkpoint_failure_after_video_keeps_primary_result_completed(self) -> None:
+        profile = DEFAULT_REGISTRY.get("minimax-h3-fl2va-base-resumable")
+        status, created = self.request("POST", "/api/generate", {
+            "output_type": "video", "profile_id": profile.id,
+            "profile_version": profile.version, "profile_digest": profile.digest(),
+            "director_mode": "t2v", "prompt": "A cinematic sunrise.",
+            "parameters": {"steps": 7, "duration": 5, "aspect_ratio": "16:9", "seed": 42},
+        })
+        self.assertEqual(status, 202)
+        job_id = created["job_id"]
+        video = "primary.mp4"
+        (self.config.comfy_output / video).write_bytes(b"video")
+        self.fake.record = {
+            "status": {"completed": True},
+            "outputs": {"17": {"videos": [{"filename": video, "subfolder": "", "type": "output"}]}},
+        }
+        result = self.request("GET", f"/api/status?id={job_id}")[1]
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["outputs"][0]["filename"], video)
+        self.assertEqual(result["checkpoint_error"]["code"], "checkpoint_missing")
+        self.assertFalse(result["can_resume"])
+
+    def test_default_direct_base_completes_without_checkpoint_and_cannot_resume(self) -> None:
+        profile = DEFAULT_REGISTRY.get("minimax-h3-fl2va-base")
+        status, created = self.request("POST", "/api/generate", {
+            "output_type": "video", "profile_id": profile.id,
+            "profile_version": profile.version, "profile_digest": profile.digest(),
+            "director_mode": "t2v", "prompt": "A cinematic sunrise.",
+            "parameters": {"steps": 20, "duration": 5, "aspect_ratio": "16:9", "seed": 42},
+        })
+        self.assertEqual(status, 202)
+        self.assertNotIn("19", self.fake.workflow)
+        job_id = created["job_id"]
+        video = "direct.mp4"
+        (self.config.comfy_output / video).write_bytes(b"video")
+        self.fake.record = {
+            "status": {"completed": True},
+            "outputs": {"17": {"videos": [{"filename": video, "subfolder": "", "type": "output"}]}},
+        }
+        completed = self.request("GET", f"/api/status?id={job_id}")[1]
+        self.assertEqual(completed["status"], "completed")
+        self.assertEqual(completed["resume_unavailable_reason"], "profile_not_tested")
+        status, body = self.request("POST", f"/api/jobs/{job_id}/resume", {
+            "additional_steps": 1, "request_id": "direct-resume-unsupported",
+        })
+        self.assertEqual(status, 409)
+        self.assertEqual(body["error"]["code"], "resume_unsupported")
 
     def test_unsupported_profile_missing_checkpoint_and_max_steps_fail_without_restart(self) -> None:
         turbo = DEFAULT_REGISTRY.get("minimax-h3-fl2va")

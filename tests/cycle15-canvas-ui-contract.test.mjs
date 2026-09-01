@@ -27,7 +27,7 @@ test("video node exposes the official H3 slot capacities and separates mode from
   assert.match(source, /已用 \{usedCount\}\/\{budget\}/);
   assert.match(source, /采样方案/);
   assert.match(source, /Turbo4 · 4 步蒸馏 LoRA/);
-  assert.match(source, /Base20 · 基础质量/);
+  assert.match(source, /Base20 Direct · 优先成片/);
 });
 
 test("canvas supports repeatable UUID nodes and a 25 to 200 percent pan zoom viewport", async () => {

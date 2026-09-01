@@ -1434,15 +1434,21 @@ def compile_video_workflow(
                 "inputs": {"sigmas": ["18", 1], "step": resume_plan.additional_steps},
             }
             workflow["21"] = {
-                "class_type": "LoadLatent",
+                "class_type": "H3StudioLoadLatent",
                 "inputs": {"latent": resume_plan.checkpoint_input},
             }
             workflow["13"]["inputs"].update({
                 "noise": ["9", 0], "sigmas": ["20", 0], "latent_image": ["21", 0],
             })
         workflow["19"] = {
-            "class_type": "SaveLatent",
-            "inputs": {"samples": ["13", 0], "filename_prefix": f"h3-studio/checkpoints/{job_id}"},
+            "class_type": "H3StudioSaveLatent",
+            "inputs": {
+                "samples": ["13", 0],
+                # SaveVideo is the primary output. Checkpoint I/O may only run
+                # after that file exists, and the custom node is best effort.
+                "video_done": ["17", 0],
+                "filename_prefix": f"h3-studio/checkpoints/{job_id}",
+            },
         }
 
     conditioning: dict[str, Any]
