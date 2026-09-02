@@ -1,6 +1,6 @@
 # MiniMax H3 Video Studio LLM Wiki
 
-> 最后更新：2026-09-01（Asia/Shanghai）。面向后续开发 Agent 的代码地图；具体发布版本以 Git 和开发机 `current` 软链接为准。实现事实优先级：源码与测试 > capability/API 回执 > 本文 > 历史 evidence 文档。
+> 最后更新：2026-09-02（Asia/Shanghai）。面向后续开发 Agent 的代码地图；具体发布版本以 Git 和开发机 `current` 软链接为准。实现事实优先级：源码与测试 > capability/API 回执 > 本文 > 历史 evidence 文档。
 
 ## 1. 先看这里
 
@@ -23,6 +23,7 @@ Browser :3013
 | 想修改的能力 | 首要文件 | 主要回归测试 |
 | --- | --- | --- |
 | 画布交互、节点 UI、生成轮询、结果抽屉 | `app/studio.tsx`, `app/globals.css` | `tests/canvas-interactions-contract.test.mjs`, `tests/studio-performance-interactions.test.mjs`, `tests/result-*.test.mjs` |
+| 前端中英文切换与持久化 | `app/ui-language.ts`, `app/studio.tsx` | `tests/ui-language.test.mjs` |
 | 画布持久化、迁移、节点合同 | `app/studio-document.ts`, `app/studio-workspace.ts` | `tests/studio-document.test.mjs`, `tests/cycle20-infinite-*.test.mjs` |
 | 连线、引用编号、执行依赖 | `app/studio-graph.ts` | `tests/studio-graph.test.mjs` |
 | H3 T2V/I2V/FL2V/R2V/V2V/RV2V | `app/studio-video-mode.ts`, `server/workflows.py` | `tests/studio-video-mode.test.mjs`, `server/tests/test_workflows.py` |
@@ -140,7 +141,23 @@ OpenAPI、`docs/cli.md` 和 API 测试。
 - 恢复备份 `h3-studio-canvas-workspace-v1-backup`
 - 旧单画布键由 `studio-document.ts` 迁移
 
-### 3.3 连线和标签
+### 3.3 界面语言
+
+Studio 首次访问默认英文，用户可在顶栏切换 English / 中文；选择保存在浏览器本地存储键
+`h3-studio-ui-language-v1`，不会进入画布文档或服务端合同。视频缩略图与播放器依据服务端
+宽高和旋转元数据识别显示方向，并使用完整画面适配；资产库的视频播放按钮只在用户点击后
+加载媒体字节并立即播放。结果抽屉采用同样的惰性播放合同：普通任务与剪辑派生视频的中央按钮控制实际播放/暂停，
+紧凑视频卡片不启用浏览器原生 controls，避免与中央按钮重复；点击画面或中央按钮都可切换状态，
+完整输出节点播放器仍保留原生 controls。资产库与结果抽屉的音频卡片也只在首次点击后加载媒体，并根据真实播放事件同步播放/暂停
+图标。“在画布预览”保持为独立动作，打开抽屉不会批量请求视频或音频媒体。`app/ui-language.ts`
+只翻译登记过的产品文案和受控动态模板，通过 `MutationObserver` 覆盖延迟加载的抽屉、
+任务进度和长视频组件；未知文本保持原样，`pre`、`code`、`textarea` 及
+`data-i18n-ignore` / `translate=no` 子树不会被改写，因此用户 Prompt 和代码示例不参与
+界面翻译。SSR 的 `<html lang>` 与 Metadata 默认英文，首屏在客户端本地化完成前隐藏，
+避免先显示中文再闪换英文。新增用户可见文案时应同步登记英文副本并扩展
+`tests/ui-language.test.mjs` 的关键路径覆盖。
+
+### 3.4 连线和标签
 
 `app/studio-graph.ts` 是类型化连线的事实来源：
 
@@ -152,7 +169,10 @@ OpenAPI、`docs/cli.md` 和 API 测试。
 
 注意：`first_frame`、`last_frame` 是 binding/工作流角色；`<Picture 1>`、`<Picture 2>` 是 Prompt 标签。FL2V 同时有首尾帧时，通常 Picture 1 对应首帧、Picture 2 对应尾帧，但两类字段不能互换。
 
-当前画布端口使用固定节点尺寸计算曲线，`studio.tsx` 与 `.port { top: 50% }` 共同决定输入点位置。生成节点很高时，端口会远离标题；修改端口位置必须同时修改 SVG `endpoint()` 计算，否则视觉线和点击端口会错位。
+当前画布通过 `ResizeObserver` 读取每个 `.port` 相对节点的实际中心，并由 `studio.tsx::endpoint()`
+把该锚点换算为画布坐标；固定 `NODE_SIZE` 只用于首次测量前的回退、概览和视口定位。
+资产工具展开、语言切换造成文案换行或节点高度变化时，观察器会自动刷新 SVG 曲线。
+修改端口 DOM/CSS 时必须保留 `data-node-id` 与输入/输出端口选择器，并回归验证连线起止点。
 
 ## 4. 视频模式与 Prompt
 

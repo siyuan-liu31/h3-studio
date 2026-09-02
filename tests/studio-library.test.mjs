@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { imageDimensions } from "../app/studio-config.ts";
-import { deriveLibraryMedia, estimateH3ReferenceCanvas, remoteAssetToLibraryItem, remoteDerivationToResult } from "../app/studio-library.ts";
+import { deriveLibraryMedia, estimateH3ReferenceCanvas, mediaDisplayOrientation, remoteAssetToLibraryItem, remoteDerivationToResult } from "../app/studio-library.ts";
 
 test("image quality and aspect ratio map to the exact requested dimensions", () => {
   const expected = {
@@ -116,6 +116,16 @@ test("H3 reference preview preserves orientation, aspect family, rotation, and 3
   assert.deepEqual(estimateH3ReferenceCanvas(1920, 1080, 90), { width: 480, height: 864 });
   assert.deepEqual(estimateH3ReferenceCanvas(320, 180), { width: 320, height: 192 });
   assert.equal(estimateH3ReferenceCanvas(0, 1080), undefined);
+});
+
+test("media display orientation honors dimensions and container rotation", () => {
+  assert.equal(mediaDisplayOrientation({ width: 540, height: 1004 }), "portrait");
+  assert.equal(mediaDisplayOrientation({ width: 1920, height: 1080 }), "landscape");
+  assert.equal(mediaDisplayOrientation({ width: 1920, height: 1080, rotation: 90 }), "portrait");
+  assert.equal(mediaDisplayOrientation({ width: 1080, height: 1920, rotation: -90 }), "landscape");
+  assert.equal(mediaDisplayOrientation({ width: 1080, height: 1080 }), "square");
+  assert.equal(mediaDisplayOrientation({ width: 0, height: 1080 }), "unknown");
+  assert.equal(mediaDisplayOrientation({ width: 1080 }), "unknown");
 });
 
 test("prepared reference receipts retain the auditable preprocessing contract", () => {

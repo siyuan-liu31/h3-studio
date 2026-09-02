@@ -96,11 +96,14 @@ test("library errors, restored save state and long-video workspace entry stay ex
   assert.doesNotMatch(studio, /timeline-context-hidden/);
 });
 
-test("audio references have an explicit icon and no eager media player", () => {
+test("canvas audio references stay lightweight while library audio is explicitly playable", () => {
   const preview = studio.match(/function AssetPreview\([\s\S]*?function MediaTools/)?.[0] ?? "";
   assert.match(preview, /role="img" aria-label="音频素材"/);
   assert.match(preview, />♫</);
   assert.doesNotMatch(preview, /<audio/);
+  const libraryAudio = studio.match(/function LazyAudioPlayer\([\s\S]*?function LibraryAssetPreview/)?.[0] ?? "";
+  assert.match(libraryAudio, /activated && <audio/);
+  assert.match(libraryAudio, /aria-label=\{`\$\{paused \? "播放" : "暂停"\} \$\{label\}`\}/);
 });
 
 test("studio never offers an automatic prompt rewrite action", () => {

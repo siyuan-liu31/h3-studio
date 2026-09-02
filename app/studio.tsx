@@ -3,11 +3,11 @@
 /* Blob URLs and authenticated generated-media routes are intentionally rendered directly. */
 /* eslint-disable @next/next/no-img-element */
 
-import { ChangeEvent, DragEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent, SetStateAction, type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ChangeEvent, DragEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent, SetStateAction, type CSSProperties, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { imageProfileAcceptsReferenceCount, imageReferencePolicy, profileSupportsParameter, promptImageReferenceNumbers, type ProfileCapability, type UnavailableProfileCapability } from "./studio-capabilities";
 import { imageDimensions, type ImageAspectRatio, type ImageQuality } from "./studio-config";
 import { JOB_HISTORY_CACHE_KEY, currentOriginApiUrl, formatJobElapsed, formatJobTime, jobParameterRows, mergeJobHistory, mergeJobHistoryPage, parseJobHistoryCacheEnvelope, rebaseStudioJobMedia, resumeGenerationJob, serializeJobHistoryCache, serverJobToStudioJob, type GenerationParameters, type StudioJob as Job } from "./studio-history";
-import { createLibraryFolder, deleteDerivedMedia, deleteLibraryAsset, deleteLibraryFolder, deriveLibraryMedia, estimateH3ReferenceCanvas, listDerivedMedia, listLibraryFolders, remoteAssetToLibraryItem, saveDerivedMedia, updateDerivedMedia, updateJobResult, updateLibraryAsset, type DerivedMedia, type LibraryAsset, type LibraryFolder, type MediaDeriveOptions, type MediaDeriveRequest, type MediaDeriveSource } from "./studio-library";
+import { createLibraryFolder, deleteDerivedMedia, deleteLibraryAsset, deleteLibraryFolder, deriveLibraryMedia, estimateH3ReferenceCanvas, listDerivedMedia, listLibraryFolders, mediaDisplayOrientation, remoteAssetToLibraryItem, saveDerivedMedia, updateDerivedMedia, updateJobResult, updateLibraryAsset, type DerivedMedia, type LibraryAsset, type LibraryFolder, type MediaDeriveOptions, type MediaDeriveRequest, type MediaDeriveSource } from "./studio-library";
 import { H3_REFERENCE_PROMPT_TEMPLATE, hasPromptForOutput, promptForOutput, promptModePayload } from "./studio-prompt";
 import PromptMentionComposer, { type PromptMentionItem } from "./prompt-mentions";
 import {
@@ -27,6 +27,7 @@ import { buildGeneratorExecutionPlan, buildOutputCollectionPlan, compilePromptDo
 import { CANVAS_WORKSPACE_BACKUP_KEY, CANVAS_WORKSPACE_STORAGE_KEY, addCanvasWorkspaceTab, commitCanvasWorkspaceStorage, createCanvasWorkspace, parseCanvasWorkspace, removeCanvasWorkspaceTab, serializeCanvasWorkspace, updateCanvasWorkspaceDocument, type CanvasWorkspaceV1 } from "./studio-workspace";
 import { assetPayloadFromStudio, studioAssetFromDocument } from "./studio-asset-roundtrip";
 import { resolveResultPreviewTarget } from "./result-preview";
+import { normalizeUiLanguage, UiLocalizer, UI_LANGUAGE_STORAGE_KEY, type UiLanguage } from "./ui-language";
 
 type NodeKind = "asset" | "video" | "image" | "output";
 type MediaKind = "image" | "video" | "audio";
@@ -35,6 +36,8 @@ type VideoRole = "motion" | "camera" | "pacing";
 type AudioRole = "voice" | "music" | "rhythm";
 type AssetRole = ImageRole | VideoRole | AudioRole;
 type XY = { x: number; y: number };
+type PortSide = "in" | "out";
+type NodePortAnchors = Record<string, Partial<Record<PortSide, XY>>>;
 type CanvasViewport = { x: number; y: number; zoom: number };
 type Asset = {
   media: MediaKind; fileName: string; localUrl: string; file?: File; remoteId?: string;
@@ -129,9 +132,24 @@ function mediaType(file: File): MediaKind | null {
   if (file.type.startsWith("audio/")) return "audio";
   return null;
 }
-function endpoint(node: StudioNode, side: "in" | "out") {
+function endpoint(node: StudioNode, side: PortSide, anchors?: NodePortAnchors) {
+  const measured = anchors?.[node.id]?.[side];
+  if (measured) return { x: node.position.x + measured.x, y: node.position.y + measured.y };
   const size = NODE_SIZE[node.kind];
   return { x: node.position.x + (side === "out" ? size.w : 0), y: node.position.y + size.h / 2 };
+}
+function portAnchor(element: HTMLElement, side: PortSide): XY | undefined {
+  const port = element.querySelector<HTMLElement>(side === "out" ? ".output-port" : ".input-port");
+  return port ? { x: port.offsetLeft + port.offsetWidth / 2, y: port.offsetTop + port.offsetHeight / 2 } : undefined;
+}
+function samePortAnchors(left: NodePortAnchors, right: NodePortAnchors): boolean {
+  const ids = Object.keys(left);
+  if (ids.length !== Object.keys(right).length) return false;
+  return ids.every((id) => (["in", "out"] as const).every((side) => {
+    const a = left[id]?.[side];
+    const b = right[id]?.[side];
+    return a === b || Boolean(a && b && a.x === b.x && a.y === b.y);
+  }));
 }
 function curve(a: XY, b: XY) {
   const bend = Math.max(70, Math.abs(b.x - a.x) * 0.45);
@@ -415,6 +433,7 @@ function createFreshStudioCanvasDocument(): CanvasDocumentV7 {
 }
 
 export default function Studio() {
+  const [uiLanguage, setUiLanguage] = useState<UiLanguage>("en");
   const [nodes, setNodes] = useState<StudioNode[]>(BASE_NODES);
   const [edges, setEdges] = useState<Edge[]>(DEFAULT_EDGES);
   const [selectedId, setSelectedId] = useState("video");
@@ -442,6 +461,7 @@ export default function Studio() {
   const [contextMenu, setContextMenu] = useState<CanvasContextMenuState | null>(null);
   const [viewport, setViewport] = useState<CanvasViewport>({ x: 32, y: 32, zoom: 1 });
   const [viewportSize, setViewportSize] = useState({ width: 0, height: 0 });
+  const [nodePortAnchors, setNodePortAnchors] = useState<NodePortAnchors>({});
   const [overviewGestureExtent, setOverviewGestureExtent] = useState<CanvasExtent>();
   const [canvasWorkspace, setCanvasWorkspace] = useState<CanvasWorkspaceV1>();
   const [workflowHydrated, setWorkflowHydrated] = useState(false);
@@ -485,6 +505,41 @@ export default function Studio() {
   const promptCompileRequestRef = useRef(0);
   const timelineRailButtonRef = useRef<HTMLButtonElement>(null);
   const previousRailPanelRef = useRef<typeof railPanel>(null);
+  const uiRootRef = useRef<HTMLElement>(null);
+  const uiLocalizerRef = useRef<UiLocalizer | undefined>(undefined);
+
+  useLayoutEffect(() => {
+    const root = uiRootRef.current;
+    if (!root) return;
+    let storedLanguage: UiLanguage = "en";
+    try {
+      storedLanguage = normalizeUiLanguage(window.localStorage.getItem(UI_LANGUAGE_STORAGE_KEY));
+    } catch {
+      // Storage may be unavailable in hardened/private browser contexts.
+    }
+    const localizer = new UiLocalizer(root);
+    uiLocalizerRef.current = localizer;
+    localizer.start(storedLanguage);
+    document.documentElement.lang = storedLanguage;
+    root.dataset.i18nReady = "true";
+    setUiLanguage(storedLanguage);
+    return () => {
+      localizer.stop();
+      uiLocalizerRef.current = undefined;
+    };
+  }, []);
+
+  const toggleUiLanguage = useCallback(() => {
+    const next: UiLanguage = uiLanguage === "en" ? "zh-CN" : "en";
+    uiLocalizerRef.current?.setLanguage(next);
+    document.documentElement.lang = next;
+    try {
+      window.localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, next);
+    } catch {
+      // The active choice still applies for this page when storage is blocked.
+    }
+    setUiLanguage(next);
+  }, [uiLanguage]);
 
   useEffect(() => { generatorStatesRef.current = generatorStates; }, [generatorStates]);
 
@@ -582,6 +637,28 @@ export default function Studio() {
     observer.observe(host);
     return () => observer.disconnect();
   }, []);
+
+  const nodeIdsKey = useMemo(() => nodes.map((node) => node.id).sort().join("\u0000"), [nodes]);
+  useLayoutEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const nodesInCanvas = () => [...canvas.querySelectorAll<HTMLElement>(".studio-node[data-node-id]")];
+    const measure = () => {
+      const next: NodePortAnchors = {};
+      for (const element of nodesInCanvas()) {
+        const nodeId = element.dataset.nodeId;
+        if (!nodeId) continue;
+        const input = portAnchor(element, "in");
+        const output = portAnchor(element, "out");
+        next[nodeId] = { ...(input ? { in: input } : {}), ...(output ? { out: output } : {}) };
+      }
+      setNodePortAnchors((current) => samePortAnchors(current, next) ? current : next);
+    };
+    const observer = new ResizeObserver(measure);
+    for (const element of nodesInCanvas()) observer.observe(element);
+    measure();
+    return () => observer.disconnect();
+  }, [nodeIdsKey]);
 
   const persistCanvasWorkspace = useCallback((workspace: CanvasWorkspaceV1, recoveryDocument?: CanvasDocumentV7): boolean => {
     const committed = commitCanvasWorkspaceStorage(localStorage, serializeCanvasWorkspace(workspace), recoveryDocument ? { key: STORAGE_KEY, value: serializeCanvasDocument(recoveryDocument) } : undefined);
@@ -1593,11 +1670,11 @@ export default function Studio() {
     }
     const canvas = canvasRef.current;
     setSelectedId(node.id); setConnecting(node.id);
-    setConnectionPointer(canvas ? canvasPointFromClient(canvas, event.clientX, event.clientY) : endpoint(node, "out"));
+    setConnectionPointer(canvas ? canvasPointFromClient(canvas, event.clientX, event.clientY) : endpoint(node, "out", nodePortAnchors));
   }
   function beginConnectionFromKeyboard(node: StudioNode) {
     const cancel = connecting === node.id;
-    setSelectedId(node.id); setConnecting(cancel ? undefined : node.id); setConnectionPointer(cancel ? undefined : endpoint(node, "out"));
+    setSelectedId(node.id); setConnecting(cancel ? undefined : node.id); setConnectionPointer(cancel ? undefined : endpoint(node, "out", nodePortAnchors));
   }
   function finishConnection(event: ReactPointerEvent<HTMLButtonElement>, targetId: string) {
     event.stopPropagation();
@@ -2278,7 +2355,7 @@ export default function Studio() {
   }, [activeProfile, generator, imageInput, imageParams, imageReferenceCount, videoDirectorContract, videoParams]);
   const renderDocument = useMemo(() => canvasDocumentFromState(nodes, edges, generatorStates, viewport), [edges, generatorStates, nodes, viewport]);
 
-  return <main className="studio-shell">
+  return <main ref={uiRootRef} className="studio-shell" data-i18n-ready="false" data-ui-language={uiLanguage}>
     <header className="topbar">
       <div className="brand"><span className="brand-mark">H3</span><div><strong>MiniMax H3 Video Studio</strong><small>MiniMax H3 + ComfyUI</small></div></div>
       <div className="canvas-tabs-wrap">
@@ -2291,7 +2368,7 @@ export default function Studio() {
           <button type="button" className="canvas-tab-add" aria-label="新建画布标签" onClick={createCanvasTab}>＋</button>
         </div>
       </div>
-      <div className="top-actions"><button className="ghost-button" type="button" onClick={createCanvasTab}>新建</button><button className="ghost-button" type="button" onClick={() => inputRef.current?.click()}><Icon>＋</Icon> 添加素材</button></div>
+      <div className="top-actions"><button className="language-toggle" data-i18n-ignore type="button" onClick={toggleUiLanguage} aria-label={uiLanguage === "en" ? "Switch interface to Chinese" : "将界面切换为英文"} title={uiLanguage === "en" ? "中文界面" : "English interface"}><span className={uiLanguage === "en" ? "active" : ""}>EN</span><i aria-hidden="true">/</i><span className={uiLanguage === "zh-CN" ? "active" : ""}>中文</span></button><button className="ghost-button" type="button" onClick={createCanvasTab}>新建</button><button className="ghost-button" type="button" onClick={() => inputRef.current?.click()}><Icon>＋</Icon> 添加素材</button></div>
     </header>
     <div className="workspace">
       <aside className="left-rail" aria-label="工作区导航">
@@ -2373,7 +2450,7 @@ export default function Studio() {
           {/* A graph canvas is an application-style composite widget, not a button. */}
           {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions, jsx-a11y/no-noninteractive-tabindex */}
           <div className="node-canvas" ref={canvasRef} role="application" tabIndex={0} aria-label="节点画布。右键新建，空白区域左键拖动平移，Ctrl 加滚轮缩放" style={{ transform: `translate3d(${viewport.x}px, ${viewport.y}px, 0) scale(${viewport.zoom})` }} onKeyDown={openCanvasContextMenuFromKeyboard}>
-          <svg className="wires" width="1" height="1" aria-hidden="true"><defs><linearGradient id="wire-gradient"><stop stopColor="#8576ff"/><stop offset="1" stopColor="#3ed6c0"/></linearGradient></defs>{edges.map((edge) => { const from = nodes.find((node) => node.id === edge.source); const to = nodes.find((node) => node.id === edge.target); if (!from || !to) return null; return <g key={edge.id} className="wire-group" onDoubleClick={() => disconnectEdge(edge.id)}><path className="wire-hit" d={curve(endpoint(from, "out"), endpoint(to, "in"))}/><path className="wire" d={curve(endpoint(from, "out"), endpoint(to, "in"))}/></g>; })}{connecting && connectionPointer && (() => { const from = nodes.find((node) => node.id === connecting); return from ? <path className="wire wire-preview" d={curve(endpoint(from, "out"), connectionPointer)}/> : null; })()}</svg>
+          <svg className="wires" width="1" height="1" aria-hidden="true"><defs><linearGradient id="wire-gradient"><stop stopColor="#8576ff"/><stop offset="1" stopColor="#3ed6c0"/></linearGradient></defs>{edges.map((edge) => { const from = nodes.find((node) => node.id === edge.source); const to = nodes.find((node) => node.id === edge.target); if (!from || !to) return null; const fromPoint = endpoint(from, "out", nodePortAnchors); const toPoint = endpoint(to, "in", nodePortAnchors); return <g key={edge.id} className="wire-group" onDoubleClick={() => disconnectEdge(edge.id)}><path className="wire-hit" d={curve(fromPoint, toPoint)}/><path className="wire" d={curve(fromPoint, toPoint)}/></g>; })}{connecting && connectionPointer && (() => { const from = nodes.find((node) => node.id === connecting); return from ? <path className="wire wire-preview" d={curve(endpoint(from, "out", nodePortAnchors), connectionPointer)}/> : null; })()}</svg>
           {nodes.map((node) => {
             const nodeRuntime = generatorStates[node.id] ?? (node.kind === "image" ? defaultGeneratorRuntime("image") : defaultGeneratorRuntime("video"));
             const nodePrompt = nodeRuntime.prompt;
@@ -2398,7 +2475,7 @@ export default function Studio() {
             const nodeImageProfile = nodeRuntime.profileId === "auto" ? nodeImageProfileChoices.find((profile) => profile.available) : nodeImageProfileChoices.find((profile) => profile.id === nodeRuntime.profileId);
             const updateNodeVideo = (action: SetStateAction<VideoParams>) => updateGenerator(node.id, (current) => ({ ...current, videoParams: applyStateAction(current.videoParams ?? DEFAULT_VIDEO_PARAMS, action), configRevision: current.configRevision + 1 }));
             const updateNodeImage = (action: SetStateAction<ImageParams>) => updateGenerator(node.id, (current) => ({ ...current, imageParams: applyStateAction(current.imageParams ?? DEFAULT_IMAGE_PARAMS, action), configRevision: current.configRevision + 1 }));
-            return <article key={node.id} className={`studio-node ${node.kind} ${selectedId === node.id ? "selected" : ""}`} data-selected={selectedId === node.id} aria-label={`${node.title} 节点`} style={{ left: node.position.x, top: node.position.y }} onContextMenu={(event) => openNodeContextMenu(event, node)} onDragStart={(event) => event.preventDefault()} onPointerDownCapture={(event) => { if (event.button === 0) { setSelectedId(node.id); canvasInteractionActiveRef.current = true; } }} onPointerDown={(event) => startDrag(event, node)}>
+            return <article key={node.id} className={`studio-node ${node.kind} ${selectedId === node.id ? "selected" : ""}`} data-node-id={node.id} data-selected={selectedId === node.id} aria-label={`${node.title} 节点`} style={{ left: node.position.x, top: node.position.y }} onContextMenu={(event) => openNodeContextMenu(event, node)} onDragStart={(event) => event.preventDefault()} onPointerDownCapture={(event) => { if (event.button === 0) { setSelectedId(node.id); canvasInteractionActiveRef.current = true; } }} onPointerDown={(event) => startDrag(event, node)}>
             {node.kind !== "asset" && <button type="button" className="port input-port" aria-label={`连接到 ${node.title}`} onPointerUp={(event) => finishConnection(event, node.id)} onClick={(event) => { event.stopPropagation(); if (event.detail === 0) connectTo(node.id); }}/>} {/* input port */}
             {node.kind !== "output" && <button type="button" className={`port output-port ${connecting === node.id ? "connecting" : ""}`} aria-label={`从 ${node.title} 开始连接`} onPointerDown={(event) => beginConnection(event, node)} onClick={(event) => { event.stopPropagation(); if (event.detail === 0) beginConnectionFromKeyboard(node); }}/>} {/* output port */}
             <header className="node-header"><div className={`node-badge ${node.kind}`}><Icon>{node.kind === "video" ? "▶" : node.kind === "image" ? "▧" : node.kind === "output" ? "✓" : "◆"}</Icon></div><div><strong>{node.title}</strong><small>{node.kind === "asset" ? node.asset?.media.toUpperCase() : node.kind === "video" ? "MiniMax H3 Video + Audio" : node.kind === "image" ? "High-quality Text / Image generation" : "Preview & download"}</small></div>{node.kind === "asset" && <button className="node-close" type="button" aria-label="删除素材" onClick={() => removeNode(node)}>×</button>}</header>
@@ -2410,7 +2487,7 @@ export default function Studio() {
               <label className="profile-picker embedded-profile-picker"><span>采样方案 <em>模式 × 档位自动解析具体 Profile</em></span><select value={nodeRuntime.profileId === "base20" ? "base20" : "turbo4"} onChange={(event) => chooseProfile("video", event.target.value, node.id)}><option value="turbo4" disabled={!nodeVideoProfileChoices.some((profile) => profile.available && profile.sampling_mode === "turbo4")}>Turbo4 · 4 步蒸馏 LoRA</option><option value="base20" disabled={!nodeVideoProfileChoices.some((profile) => profile.available && profile.sampling_mode === "base")}>Base20 Direct · 优先成片</option></select><small>{nodeVideoProfileChoices.find((profile) => profile.available && profile.sampling_mode === (nodeRuntime.profileId === "base20" ? "base" : "turbo4")) ? `${nodeVideoProfileChoices.find((profile) => profile.available && profile.sampling_mode === (nodeRuntime.profileId === "base20" ? "base" : "turbo4"))!.id}@${nodeVideoProfileChoices.find((profile) => profile.available && profile.sampling_mode === (nodeRuntime.profileId === "base20" ? "base" : "turbo4"))!.version}` : "当前组合没有可用 Profile"}</small></label>
               <VideoReferenceSlots sources={nodes} bindings={nodeBindings} budget={6} onChoose={(media, slot) => { setAssetPickerTarget({ nodeId: node.id, media, slot }); setRailPanel("assets"); }} onRemove={(sourceNodeId, media) => { const source = nodes.find((item) => item.id === sourceNodeId); if (media === "audio" && source?.asset?.media === "video") { updateReferenceAudio(node.id, sourceNodeId, false); return; } const edge = edges.find((item) => item.source === sourceNodeId && item.target === node.id); if (edge) disconnectEdge(edge.id); }} onToggleAudio={(sourceNodeId, enabled) => updateReferenceAudio(node.id, sourceNodeId, enabled)}/>
               <details className="generator-advanced" open><summary>尺寸、时长与高级参数</summary><ParameterSummary title="当前解析配置" parameters={selectedId === node.id ? resolvedContract : undefined} compact/><ParameterPanel kind="video" hasImageInput={false} video={nodeVideoParams} setVideo={updateNodeVideo} image={nodeImageParams} setImage={updateNodeImage} profile={nodeVideoProfile}/></details>
-              <details className={`prompt-preview ${nodeCompile.state === "error" ? "has-error" : ""}`} open={selectedId === node.id || nodeCompile.state === "error" ? true : undefined}><summary>H3 最终提示词预览（只读） · {nodeCompile.state === "loading" ? "校验中" : nodeCompile.state === "ready" ? "服务端已确认" : nodeCompile.state === "error" ? "校验失败" : "本地预览"}</summary>{nodeCompile.error && <div className="prompt-compile-error" role="alert"><span>最终提示词校验失败：{nodeCompile.error}</span><button type="button" onClick={() => { setSelectedId(node.id); setCompileRetryToken((value) => value + 1); }}>重新校验</button></div>}<pre>{nodeCompile.prompt || nodePrompt.trim() || "填写提示词后显示实际提交文本"}</pre></details>
+              <details className={`prompt-preview ${nodeCompile.state === "error" ? "has-error" : ""}`} open={selectedId === node.id || nodeCompile.state === "error" ? true : undefined}><summary>H3 最终提示词预览（只读） · {nodeCompile.state === "loading" ? "校验中" : nodeCompile.state === "ready" ? "服务端已确认" : nodeCompile.state === "error" ? "校验失败" : "本地预览"}</summary>{nodeCompile.error && <div className="prompt-compile-error" role="alert"><span>最终提示词校验失败：{nodeCompile.error}</span><button type="button" onClick={() => { setSelectedId(node.id); setCompileRetryToken((value) => value + 1); }}>重新校验</button></div>}<pre data-i18n-ui-copy={!nodeCompile.prompt && !nodePrompt.trim() ? true : undefined}>{nodeCompile.prompt || nodePrompt.trim() || "填写提示词后显示实际提交文本"}</pre></details>
               <GeneratorNodeStatus job={nodeJob} busy={nodeBusy} onCancel={() => void cancelJob(node.id)}/>
               <nav className="node-workflow-actions"><a href={["r2v", "v2v", "rv2v"].includes(nodeContract.resolvedMode) ? `/api/workflows/director/${nodeContract.resolvedMode}` : "/api/workflows/director"} target="_blank" rel="noreferrer">查看模式合同</a></nav>
               <button type="button" className="node-generate" disabled={nodeBusy || nodeContract.errors.length > 0} onClick={() => { setSelectedId(node.id); void generate("video", node.id); }}>{nodeBusy ? "生成中…" : "生成视频"} <span>▶</span></button>
@@ -2551,7 +2628,8 @@ function AssetPreview({ nodeId, asset, connectedTarget, referenceIndex, onDerive
   const [imagePreviewLoaded, setImagePreviewLoaded] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
   const imageThumbnail = asset.thumbnailUrl ?? (!asset.remoteId ? asset.localUrl : undefined);
-  return <div className="asset-node-body" onDragStart={(event) => event.preventDefault()}><div className="asset-preview">{referenceIndex && <b className="picture-index">图{referenceIndex} · Image {referenceIndex}</b>}{asset.media === "image" && asset.localUrl ? imagePreviewLoaded ? <img src={asset.localUrl} alt={asset.fileName} draggable={false}/> : <button type="button" className="asset-video-load" data-no-drag onClick={() => setImagePreviewLoaded(true)} aria-label={`加载 ${asset.fileName} 的原图预览`}>{imageThumbnail && <img src={imageThumbnail} alt="" loading="lazy" decoding="async" draggable={false}/>}<span>⌕</span><small>点击加载原图</small></button> : null}{asset.media === "video" && asset.localUrl ? videoPreviewLoaded ? (
+  const displayOrientation = mediaDisplayOrientation(asset.mediaMeta ?? {});
+  return <div className="asset-node-body" onDragStart={(event) => event.preventDefault()}><div className="asset-preview" data-media-kind={asset.media} data-orientation={displayOrientation}>{referenceIndex && <b className="picture-index">图{referenceIndex} · Image {referenceIndex}</b>}{asset.media === "image" && asset.localUrl ? imagePreviewLoaded ? <img src={asset.localUrl} alt={asset.fileName} draggable={false}/> : <button type="button" className="asset-video-load" data-no-drag onClick={() => setImagePreviewLoaded(true)} aria-label={`加载 ${asset.fileName} 的原图预览`}>{imageThumbnail && <img src={imageThumbnail} alt="" loading="lazy" decoding="async" draggable={false}/>}<span>⌕</span><small>点击加载原图</small></button> : null}{asset.media === "video" && asset.localUrl ? videoPreviewLoaded ? (
     // Remote video bytes are fetched only after the user explicitly asks for a preview.
     // eslint-disable-next-line jsx-a11y/media-has-caption
     <video ref={videoRef} src={asset.localUrl} controls playsInline preload="metadata" data-no-drag draggable={false} aria-label={`${asset.fileName} 视频预览`}/>
@@ -2776,6 +2854,76 @@ function TaskHistory({ jobs, currentId, onSelect, onClear }: { jobs: Job[]; curr
     })}</div>
   </section>;
 }
+
+function LazyAudioPlayer({ source, label }: { source: string; label: string }) {
+  const [activated, setActivated] = useState(false);
+  const [paused, setPaused] = useState(true);
+  const audioRef = useRef<HTMLAudioElement>(null);
+  const togglePlayback = () => {
+    const audio = audioRef.current;
+    if (!activated || !audio) {
+      setActivated(true);
+      return;
+    }
+    if (audio.paused || audio.ended) void audio.play(); else audio.pause();
+  };
+  return <div className={`library-audio-player${paused ? " paused" : " playing"}`}>
+    {/* Audio bytes are mounted only after an explicit user action. */}
+    {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
+    {activated && <audio ref={audioRef} src={source} autoPlay preload="metadata" onPlay={() => setPaused(false)} onPause={() => setPaused(true)} onEnded={() => setPaused(true)} aria-label={`${label} 音频播放器`}/>}
+    <button type="button" className="library-audio-toggle" onClick={togglePlayback} aria-label={`${paused ? "播放" : "暂停"} ${label}`}>
+      <span className="library-audio" aria-hidden="true">♫</span>
+      <span className="library-audio-state" aria-hidden="true">{paused ? "▶" : "Ⅱ"}</span>
+    </button>
+  </div>;
+}
+
+function LazyVideoPlayer({ source, label, thumbnailUrl }: { source: string; label: string; thumbnailUrl?: string }) {
+  const [activated, setActivated] = useState(false);
+  const [paused, setPaused] = useState(true);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const togglePlayback = () => {
+    const video = videoRef.current;
+    if (!video) return;
+    if (video.paused || video.ended) void video.play(); else video.pause();
+  };
+  if (!activated) return <button type="button" className="library-video-play result-library-video-play" onClick={() => setActivated(true)} aria-label={`播放 ${label}`}>
+    {thumbnailUrl ? <img src={thumbnailUrl} alt="" loading="lazy" decoding="async" draggable={false}/> : <span className="result-library-video-placeholder" aria-hidden="true"><b>▶</b><small>点击加载原媒体</small></span>}
+    <span className="library-video-overlay" aria-hidden="true">▶</span>
+  </button>;
+  return <div className={`library-video-player result-library-video-player${paused ? " paused" : " playing"}`}>
+    {/* Derived video bytes are mounted only after the user explicitly presses play. */}
+    {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
+    <video ref={videoRef} src={source} poster={thumbnailUrl} autoPlay playsInline preload="metadata" onClick={togglePlayback} onPlay={() => setPaused(false)} onPause={() => setPaused(true)} onEnded={() => setPaused(true)} aria-label={`${label} 视频播放器`}/>
+    <button type="button" className="library-video-toggle result-library-video-toggle" onClick={togglePlayback} aria-label={`${paused ? "播放" : "暂停"} ${label}`}><span aria-hidden="true">{paused ? "▶" : "Ⅱ"}</span></button>
+  </div>;
+}
+
+function LibraryAssetPreview({ item, selecting, selected, duplicate, onToggleSelection }: { item: LibraryAsset; selecting: boolean; selected: boolean; duplicate: boolean; onToggleSelection: () => void }) {
+  const [activated, setActivated] = useState(false);
+  const [paused, setPaused] = useState(true);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const displayOrientation = mediaDisplayOrientation(item.media);
+  const togglePlayback = () => {
+    const video = videoRef.current;
+    if (!video) return;
+    if (video.paused || video.ended) void video.play(); else video.pause();
+  };
+  return <div className="library-preview" data-media-kind={item.kind} data-orientation={displayOrientation}>
+    {selecting && <label className="library-select"><input type="checkbox" checked={selected} onChange={onToggleSelection} aria-label={`选择资产 ${item.filename}`}/><span>选择</span></label>}
+    {item.kind === "video" ? activated ? <div className={`library-video-player${paused ? " paused" : " playing"}`}>
+      {/* The authenticated video route is mounted only after this explicit user action. */}
+      {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
+      <video ref={videoRef} src={item.contentUrl} poster={item.thumbnailUrl || undefined} autoPlay playsInline preload="metadata" onClick={togglePlayback} onPlay={() => setPaused(false)} onPause={() => setPaused(true)} onEnded={() => setPaused(true)} aria-label={`${item.filename} 视频播放器`}/>
+      <button type="button" className="library-video-toggle" onClick={togglePlayback} aria-label={`${paused ? "播放" : "暂停"} ${item.filename}`}><span aria-hidden="true">{paused ? "▶" : "Ⅱ"}</span></button>
+    </div> : <button type="button" className="library-video-play" onClick={() => setActivated(true)} aria-label={`播放 ${item.filename}`}>
+      {item.thumbnailUrl ? <img src={item.thumbnailUrl} alt="" loading="lazy" decoding="async"/> : <span className="library-video-placeholder" aria-hidden="true">▶</span>}
+      <span className="library-video-overlay" aria-hidden="true">▶</span>
+    </button> : item.kind === "image" && item.thumbnailUrl ? <img src={item.thumbnailUrl} alt={`${item.filename} 缩略图`} loading="lazy" decoding="async"/> : item.kind === "image" ? <span className="library-audio" role="img" aria-label="缩略图待生成">▧</span> : <LazyAudioPlayer source={item.contentUrl} label={item.filename}/>}
+    <b>{item.kind.toUpperCase()}</b>{duplicate && <em className="library-duplicate-badge">重复</em>}
+  </div>;
+}
+
 function AssetLibrary({ items, folders, state, onAdd, onUpload, onRefresh, onCreateFolder, onRename, onMove, onPin, onDeleteFolder, onDelete, onClose }: { items: LibraryAsset[]; folders: LibraryFolder[]; state: "loading" | "ready" | "error"; onAdd: (item: LibraryAsset, connectTarget?: "image") => void; onUpload: () => void; onRefresh: () => void; onCreateFolder: (name: string) => Promise<void>; onRename: (item: LibraryAsset, displayName: string) => Promise<void>; onMove: (item: LibraryAsset, folderId: string) => Promise<void>; onPin: (item: LibraryAsset, pinned: boolean) => Promise<void>; onDeleteFolder: (folder: LibraryFolder) => Promise<void>; onDelete: (item: LibraryAsset) => Promise<void>; onClose: () => void }) {
   const [query, setQuery] = useState("");
   const [folderId, setFolderId] = useState("");
@@ -2842,7 +2990,7 @@ function AssetLibrary({ items, folders, state, onAdd, onUpload, onRefresh, onCre
     <p className="library-state" role="status" aria-live="polite">{state === "loading" ? "正在读取资产…" : state === "error" ? "资产读取失败，可重试。" : `${items.length} 个资产 · 显示 ${displayed.length} 个${duplicateIds.size && !showDuplicates ? ` · 已收起 ${duplicateIds.size} 个重复项` : ""}`}</p>
     {(selecting || duplicateIds.size > 0) && <div className="library-bulk-actions"><button type="button" onClick={() => setSelectedIds(new Set(displayed.map((item) => item.id)))}>全选当前</button>{duplicateIds.size > 0 && <button type="button" onClick={() => { setShowDuplicates(true); setSelecting(true); setSelectedIds(new Set(duplicateIds)); }}>选择重复项 ({duplicateIds.size})</button>}<button type="button" onClick={() => setShowDuplicates((value) => !value)}>{showDuplicates ? "收起重复" : "显示重复"}</button>{selecting && <button type="button" className="library-delete" disabled={!effectiveSelectedIds.size || Boolean(busyId)} onClick={() => void removeSelected()}>{busyId === "batch" ? "删除中…" : `删除所选 (${effectiveSelectedIds.size})`}</button>}</div>}
     <div className="library-grid">{displayed.map((item) => <article className={`library-card${effectiveSelectedIds.has(item.id) ? " selected" : ""}${item.pinned ? " pinned" : ""}`} key={item.id}>
-      <div className="library-preview">{selecting && <label className="library-select"><input type="checkbox" checked={effectiveSelectedIds.has(item.id)} onChange={() => toggleSelection(item.id)} aria-label={`选择资产 ${item.filename}`}/><span>选择</span></label>}{item.kind !== "audio" && item.thumbnailUrl && <img src={item.thumbnailUrl} alt={`${item.filename} 缩略图`} loading="lazy" decoding="async"/>}{item.kind !== "audio" && !item.thumbnailUrl && <span className="library-audio" role="img" aria-label="缩略图待生成">▧</span>}{item.kind === "video" && <span className="library-video-overlay" aria-hidden="true">▶</span>}{item.kind === "audio" && <span className="library-audio" role="img" aria-label="音频">♫</span>}<b>{item.kind.toUpperCase()}</b>{duplicateIds.has(item.id) && <em className="library-duplicate-badge">重复</em>}</div>
+      <LibraryAssetPreview item={item} selecting={selecting} selected={effectiveSelectedIds.has(item.id)} duplicate={duplicateIds.has(item.id)} onToggleSelection={() => toggleSelection(item.id)}/>
       <div className="library-card-body"><strong title={item.filename}>{item.pinned ? "★ " : ""}{item.filename}</strong><small>{item.media.width && item.media.height ? `${item.media.width}×${item.media.height}` : item.media.duration ? `${item.media.duration.toFixed(2)}s` : formatJobTime(item.createdAt)}</small><div className="library-card-tools"><button type="button" disabled={busyId === item.id} onClick={() => void rename(item)}>改名</button><select value={item.folderId ?? ""} disabled={busyId === item.id} onChange={(event) => { setBusyId(item.id); void onMove(item, event.target.value).catch(() => undefined).finally(() => setBusyId(undefined)); }} aria-label={`移动 ${item.filename} 到文件夹`}><option value="">未分类</option>{folders.map((folder) => <option key={folder.id} value={folder.id}>{folder.name}</option>)}</select><button type="button" className="library-pin" disabled={busyId === item.id} onClick={() => { setBusyId(item.id); void onPin(item, !item.pinned).catch(() => undefined).finally(() => setBusyId(undefined)); }} aria-label={`${item.pinned ? "取消置顶" : "置顶"}资产 ${item.filename}`}>{item.pinned ? "取消置顶" : "置顶"}</button><button type="button" className="library-delete" disabled={busyId === item.id} onClick={() => void remove(item)} aria-label={`删除资产 ${item.filename}`}>{busyId === item.id ? "处理中…" : "删除"}</button></div><button type="button" onClick={() => onAdd(item)} aria-label={`将 ${item.filename} 添加到画布`}>添加到画布</button>{item.kind === "image" && <button type="button" className="library-connect-image" onClick={() => onAdd(item, "image")} aria-label={`将 ${item.filename} 连到图片生成`}>连到生图</button>}</div>
     </article>)}</div>
     {state === "ready" && !filtered.length && <div className="library-empty"><span>◇</span><strong>{items.length ? "没有匹配资产" : "还没有资产"}</strong><p>{items.length ? "换个搜索词或文件夹试试。" : "生成结果不会自动进入资产；请在“结果”中点“保存到资产”，或上传本地素材。"}</p></div>}
@@ -2851,11 +2999,16 @@ function AssetLibrary({ items, folders, state, onAdd, onUpload, onRefresh, onCre
 function ResultThumbnail({ job }: { job: Job }) {
   const fallback = job.id ? `/api/jobs/${encodeURIComponent(job.id)}/thumbnail?index=0` : undefined;
   const primary = currentOriginApiUrl(job.thumbnailUrl, fallback);
+  const videoSource = currentOriginApiUrl(job.previewUrl, currentOriginApiUrl(job.downloadUrl));
+  const videoLabel = job.id ?? "视频结果";
   const candidates = useMemo(() => Array.from(new Set([primary, fallback].filter((candidate): candidate is string => Boolean(candidate)))), [fallback, primary]);
   const [candidateIndex, setCandidateIndex] = useState(0);
   const [retry, setRetry] = useState(0);
   const [coolingDown, setCoolingDown] = useState(false);
   const [recoveryCycle, setRecoveryCycle] = useState(0);
+  const [activated, setActivated] = useState(false);
+  const [paused, setPaused] = useState(true);
+  const videoRef = useRef<HTMLVideoElement>(null);
   useEffect(() => {
     if (!coolingDown || recoveryCycle >= 4) return;
     const timer = window.setTimeout(() => {
@@ -2867,13 +3020,12 @@ function ResultThumbnail({ job }: { job: Job }) {
     return () => window.clearTimeout(timer);
   }, [coolingDown, recoveryCycle]);
   const thumbnail = coolingDown ? undefined : candidates[candidateIndex];
-  if (!thumbnail) return <span className="result-library-video-placeholder" aria-hidden="true"><b>{job.media === "video" ? "▶" : "▧"}</b><small>{coolingDown && recoveryCycle < 4 ? "缩略图恢复中…" : "点击加载原媒体"}</small></span>;
   // Thumbnail responses are immutable for efficient browsing. Include the
   // renderer recipe in the request URL so a fixed recipe cannot be masked by
   // a browser's year-long cache of an older (for example, black-frame) image.
-  const versionedThumbnail = `${thumbnail}${thumbnail.includes("?") ? "&" : "?"}thumbnail_recipe=2`;
-  const retryUrl = retry > 0 ? `${versionedThumbnail}&thumb_retry=${retry}` : versionedThumbnail;
-  return <><img src={retryUrl} alt={`${job.media === "video" ? "视频" : "图片"}结果缩略图`} loading="lazy" decoding="async" onError={() => {
+  const versionedThumbnail = thumbnail ? `${thumbnail}${thumbnail.includes("?") ? "&" : "?"}thumbnail_recipe=2` : undefined;
+  const retryUrl = versionedThumbnail ? retry > 0 ? `${versionedThumbnail}&thumb_retry=${retry}` : versionedThumbnail : undefined;
+  const thumbnailFailed = () => {
     if (retry < 2) {
       window.setTimeout(() => setRetry((current) => current + 1), 500 * (retry + 1));
       return;
@@ -2884,7 +3036,27 @@ function ResultThumbnail({ job }: { job: Job }) {
       return;
     }
     setCoolingDown(true);
-  }}/>{job.media === "video" && <span className="library-video-overlay" aria-hidden="true">▶</span>}</>;
+  };
+  if (job.media === "video" && activated && videoSource) {
+    const togglePlayback = () => {
+      const video = videoRef.current;
+      if (!video) return;
+      if (video.paused || video.ended) void video.play(); else video.pause();
+    };
+    return <div className={`library-video-player result-library-video-player${paused ? " paused" : " playing"}`}>
+      {/* Result video bytes are mounted only after the user explicitly presses play. */}
+      {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
+      <video ref={videoRef} src={videoSource} poster={retryUrl} autoPlay playsInline preload="metadata" onClick={togglePlayback} onPlay={() => setPaused(false)} onPause={() => setPaused(true)} onEnded={() => setPaused(true)} aria-label={`${videoLabel} 视频播放器`}/>
+      <button type="button" className="library-video-toggle result-library-video-toggle" onClick={togglePlayback} aria-label={`${paused ? "播放" : "暂停"} ${videoLabel}`}><span aria-hidden="true">{paused ? "▶" : "Ⅱ"}</span></button>
+    </div>;
+  }
+  const placeholder = <span className="result-library-video-placeholder" aria-hidden="true"><b>{job.media === "video" ? "▶" : "▧"}</b><small>{coolingDown && recoveryCycle < 4 ? "缩略图恢复中…" : "点击加载原媒体"}</small></span>;
+  if (job.media === "video" && videoSource) return <button type="button" className="library-video-play result-library-video-play" onClick={() => setActivated(true)} aria-label={`播放 ${videoLabel}`}>
+    {retryUrl ? <img src={retryUrl} alt="" loading="lazy" decoding="async" onError={thumbnailFailed}/> : placeholder}
+    <span className="library-video-overlay" aria-hidden="true">▶</span>
+  </button>;
+  if (!retryUrl) return placeholder;
+  return <img src={retryUrl} alt={`${job.media === "video" ? "视频" : "图片"}结果缩略图`} loading="lazy" decoding="async" onError={thumbnailFailed}/>;
 }
 function ResultLibrary({ jobs, derivedResults, state, verified, error, pageError, savedResultAssets, currentId, hasMore, onRetry, onLoadMore, onPin, onResume, onPinDerived, onSelect, onAdd, onSave, onDelete, onAddDerived, onSaveDerived, onDeleteDerived, onClose }: { jobs: Job[]; derivedResults: DerivedMedia[]; state: "loading" | "refreshing" | "ready" | "error"; verified: boolean; error: string; pageError: string; savedResultAssets: Record<string, string>; currentId?: string; hasMore: boolean; onRetry: () => Promise<number>; onLoadMore: () => Promise<number>; onSelect: (job: Job) => void; onAdd: (job: Job) => Promise<void>; onSave: (job: Job) => Promise<LibraryAsset | undefined>; onDelete: (job: Job) => Promise<void>; onPin: (job: Job, pinned: boolean) => Promise<void>; onResume: (job: Job, additionalSteps: number) => Promise<void>; onAddDerived: (derived: DerivedMedia) => Promise<void>; onSaveDerived: (derived: DerivedMedia) => Promise<LibraryAsset | undefined>; onDeleteDerived: (derived: DerivedMedia) => Promise<void>; onPinDerived: (derived: DerivedMedia, pinned: boolean) => Promise<void>; onClose: () => void }) {
   const [visibleCount, setVisibleCount] = useState(RESULT_PAGE_SIZE);
@@ -2983,7 +3155,7 @@ function ResultLibrary({ jobs, derivedResults, state, verified, error, pageError
     {state === "loading" && !totalResults && <div className="result-library-skeleton" aria-hidden="true"><i/><i/><i/></div>}
     <div className="result-library-list">{orderedDerivedResults.map((item) => <article key={`derived-${item.id}`} className={`result-library-card derived-result-card${item.pinned ? " pinned" : ""}${effectiveSelectedIds.has(resultKey("derived", item.id)) ? " selected" : ""}`}>
       {selecting && <label className="result-library-select"><input type="checkbox" checked={effectiveSelectedIds.has(resultKey("derived", item.id))} onChange={() => toggleSelection(resultKey("derived", item.id))} aria-label={`选择派生结果 ${item.displayName}`}/><span>选择</span></label>}
-      <div className="result-library-preview" aria-label={`派生结果 ${item.displayName}`}>{item.kind === "audio" ? <span className="result-library-video-placeholder" aria-hidden="true"><b>♫</b><small>音频派生结果</small></span> : item.thumbnailUrl ? <><img src={item.thumbnailUrl} alt={`${item.kind === "image" ? "图片" : "视频"}派生结果缩略图`} loading="lazy" decoding="async" draggable={false}/>{item.kind === "video" && <span className="library-video-overlay" aria-hidden="true">▶</span>}</> : <span className="result-library-video-placeholder" aria-hidden="true"><b>{item.kind === "video" ? "▶" : "▧"}</b><small>派生结果</small></span>}<span className="result-library-preview-label">剪辑派生</span></div>
+      <div className="result-library-preview" aria-label={`派生结果 ${item.displayName}`}>{item.kind === "audio" ? <LazyAudioPlayer source={item.contentUrl} label={item.displayName}/> : item.kind === "video" ? <LazyVideoPlayer source={item.contentUrl} label={item.displayName} thumbnailUrl={item.thumbnailUrl}/> : item.thumbnailUrl ? <img src={item.thumbnailUrl} alt="图片派生结果缩略图" loading="lazy" decoding="async" draggable={false}/> : <span className="result-library-video-placeholder" aria-hidden="true"><b>▧</b><small>派生结果</small></span>}<span className="result-library-preview-label">剪辑派生</span></div>
       <div className="result-library-meta"><strong title={item.displayName}>{item.pinned ? "★ " : ""}{item.displayName}</strong><small>{item.createdAt ? formatJobTime(item.createdAt) : "已持久化结果"}{item.assetId ? " · 已保存到资产" : " · 未保存到资产"}</small></div>
       <div className="result-library-actions">
         <button type="button" disabled={Boolean(addingId || savingId || deletingId)} onClick={() => void addDerived(item)} aria-label={`将派生结果 ${item.displayName} 添加到画布`}>{addingId === item.id ? "添加中…" : "＋ 添加到画布"}</button>
@@ -2994,7 +3166,7 @@ function ResultLibrary({ jobs, derivedResults, state, verified, error, pageError
       </div>
     </article>)}{visible.map((item) => <article key={item.id} className={`result-library-card ${item.id === currentId ? "current" : ""}${item.pinned ? " pinned" : ""}${item.id && effectiveSelectedIds.has(resultKey("job", item.id)) ? " selected" : ""}`}>
       {selecting && item.id && <label className="result-library-select"><input type="checkbox" checked={effectiveSelectedIds.has(resultKey("job", item.id))} onChange={() => toggleSelection(resultKey("job", item.id!))} aria-label={`选择任务结果 ${item.id}`}/><span>选择</span></label>}
-      <button type="button" className="result-library-preview" onClick={() => onSelect(item)} aria-label={`在画布预览任务 ${item.id}`}><ResultThumbnail job={item} key={`${item.id}:${item.thumbnailUrl ?? ""}`}/><span className="result-library-preview-label">在画布预览</span></button>
+      {item.media === "video" ? <div className="result-library-preview" aria-label={`视频任务结果 ${item.id}`}><ResultThumbnail job={item} key={`${item.id}:${item.thumbnailUrl ?? ""}`}/><button type="button" className="result-library-preview-label result-library-open-canvas" onClick={() => onSelect(item)} aria-label={`在画布预览任务 ${item.id}`}>在画布预览</button></div> : <button type="button" className="result-library-preview" onClick={() => onSelect(item)} aria-label={`在画布预览任务 ${item.id}`}><ResultThumbnail job={item} key={`${item.id}:${item.thumbnailUrl ?? ""}`}/><span className="result-library-preview-label">在画布预览</span></button>}
       <div className="result-library-meta"><strong>{item.pinned ? "★ " : ""}{item.parameters?.width && item.parameters?.height ? `${item.parameters.width}×${item.parameters.height}` : item.media === "image" ? "图片" : "视频"}</strong><small>{formatJobTime(item.createdAt)} · {formatJobElapsed(item.createdAt, item.updatedAt)}</small></div>
       {item.resume?.supported && (() => { const maximumAdditional = Math.max(0, item.resume.max_total_steps - item.resume.current_steps); const additional = Math.min(Math.max(1, resumeSteps[item.id!] ?? 1), Math.max(1, maximumAdditional)); const reason = item.resume.reason === "chain_busy" ? "同一任务链正在续跑" : item.resume.reason === "checkpoint_expired" ? "续跑点已过期" : item.resume.reason === "checkpoint_corrupt" ? "续跑点已损坏" : item.resume.reason === "checkpoint_state_mismatch" ? "任务与续跑点状态不一致" : item.resume.reason === "checkpoint_missing" ? "续跑点不存在" : item.resume.reason === "max_steps_reached" ? "已达到最大总步数" : item.resume.reason === "checkpoint_pending" ? "正在保存续跑点" : "续跑点暂不可用"; return <div className="result-resume-panel"><span>当前总步数：{item.resume.current_steps} / {item.resume.max_total_steps}</span>{item.resume.checkpoint_expires_at && <small>续跑点有效至：{new Date(item.resume.checkpoint_expires_at * 1000).toLocaleString("zh-CN")}</small>}<label><span>追加步数</span><input type="number" min="1" max={Math.max(1, maximumAdditional)} value={additional} onChange={(event) => setResumeSteps((current) => ({ ...current, [item.id!]: Math.min(Math.max(1, Math.floor(Number(event.target.value) || 1)), Math.max(1, maximumAdditional)) }))}/></label><small>续跑后总步数：{item.resume.current_steps + additional}</small><button type="button" disabled={!item.resume.can_resume || maximumAdditional < 1 || Boolean(resumingId)} onClick={() => { setResumingId(item.id); void onResume(item, additional).catch(() => undefined).finally(() => setResumingId(undefined)); }}>{resumingId === item.id ? "提交中…" : "继续生成"}</button>{!item.resume.can_resume && <small>{reason}</small>}</div>; })()}
       <div className="result-library-actions">

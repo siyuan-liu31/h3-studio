@@ -11,6 +11,7 @@ export type LibraryMedia = {
   height?: number;
   rotation?: number;
 };
+export type MediaDisplayOrientation = "portrait" | "landscape" | "square" | "unknown";
 export type LibraryAsset = {
   id: string;
   kind: LibraryMediaKind;
@@ -64,6 +65,19 @@ const MEDIA_KINDS = new Set<LibraryMediaKind>(["image", "video", "audio"]);
 function finiteNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
+
+export function mediaDisplayOrientation(media: Pick<LibraryMedia, "width" | "height" | "rotation">): MediaDisplayOrientation {
+  const width = finiteNumber(media.width);
+  const height = finiteNumber(media.height);
+  if (width === undefined || height === undefined || width <= 0 || height <= 0) return "unknown";
+  const rotation = finiteNumber(media.rotation) ?? 0;
+  const normalizedRotation = ((rotation % 360) + 360) % 360;
+  const swapsAxes = Math.abs(normalizedRotation - 90) < 1 || Math.abs(normalizedRotation - 270) < 1;
+  const displayWidth = swapsAxes ? height : width;
+  const displayHeight = swapsAxes ? width : height;
+  return displayWidth === displayHeight ? "square" : displayWidth < displayHeight ? "portrait" : "landscape";
+}
+
 function sameOriginApiPath(value: unknown, fallback: string): string {
   return typeof value === "string" && value.startsWith("/api/") && !value.includes("\\") ? value : fallback;
 }

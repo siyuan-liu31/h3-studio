@@ -30,6 +30,21 @@ test("a primary press on blank canvas cancels the pending connection and dashed 
   assert.match(source, /\{connecting && connectionPointer/);
 });
 
+test("wire endpoints follow the rendered port centers when node content changes height", async () => {
+  const source = await readFile(studioPath, "utf8");
+  const endpointBody = source.slice(source.indexOf("function endpoint("), source.indexOf("function curve("));
+  const wireSurface = source.slice(source.indexOf('<svg className="wires"'), source.indexOf("</svg>", source.indexOf('<svg className="wires"')));
+
+  assert.match(source, /data-node-id=\{node\.id\}/, "rendered nodes expose stable identities for geometry measurement");
+  assert.match(source, /querySelectorAll<HTMLElement>\("\.studio-node\[data-node-id\]"\)/, "only canvas nodes are observed");
+  assert.match(source, /new ResizeObserver\(measure\)/, "node expansion and collapse trigger a fresh port measurement");
+  assert.match(endpointBody, /anchors\?\.\[node\.id\]\?\.\[side\]/, "measured anchors take precedence");
+  assert.match(endpointBody, /const size = NODE_SIZE\[node\.kind\]/, "the initial render keeps a safe fixed-size fallback");
+  assert.match(wireSurface, /endpoint\(from, "out", nodePortAnchors\)/);
+  assert.match(wireSurface, /endpoint\(to, "in", nodePortAnchors\)/);
+  assert.doesNotMatch(wireSurface, /curve\(endpoint\(from, "out"\), endpoint\(to, "in"\)\)/, "persisted wires cannot fall back to stale fixed heights after measurement");
+});
+
 test("ordinary primary-button dragging on blank canvas pans the viewport", async () => {
   const source = await readFile(studioPath, "utf8");
   const pointerDown = source.slice(source.indexOf("function startCanvasPan("), source.indexOf("function moveCanvasPan("));

@@ -40,6 +40,7 @@ test("ordinary Ref2VA preview and generation delegate to the shared read-only pr
 
 test("image surfaces use lazy thumbnail endpoints rather than eager original bytes", () => {
   const assetPreview = functionBody(studio, "AssetPreview", "MediaTools");
+  const libraryAssetPreview = functionBody(studio, "LibraryAssetPreview", "AssetLibrary");
   const assetLibrary = functionBody(studio, "AssetLibrary", "ResultThumbnail");
   const resultThumbnail = functionBody(studio, "ResultThumbnail", "ResultLibrary");
   const resultLibrary = functionBody(studio, "ResultLibrary", "ParameterPanel");
@@ -49,8 +50,10 @@ test("image surfaces use lazy thumbnail endpoints rather than eager original byt
   assert.match(assetPreview, /imagePreviewLoaded[\s\S]*?imageThumbnail && <img[^>]+loading="lazy"/);
   assert.doesNotMatch(assetPreview, /asset\.media === "image" && asset\.localUrl \? <img/);
   assert.match(assetPreview, /<img[^>]+loading="lazy"[^>]+decoding="async"/);
-  assert.match(assetLibrary, /item\.thumbnailUrl/);
-  assert.doesNotMatch(assetLibrary, /item\.kind === "image" \? item\.contentUrl/);
+  assert.match(assetLibrary, /<LibraryAssetPreview item=\{item\}/);
+  assert.match(libraryAssetPreview, /item\.thumbnailUrl/);
+  assert.match(libraryAssetPreview, /loading="lazy"/);
+  assert.doesNotMatch(libraryAssetPreview, /item\.kind === "image" \? item\.contentUrl/);
   assert.match(resultLibrary, /<ResultThumbnail job=\{item\}/);
   assert.match(resultThumbnail, /\/api\/jobs\/\$\{encodeURIComponent\(job\.id\)\}\/thumbnail\?index=0/);
   assert.match(resultThumbnail, /loading="lazy"/);

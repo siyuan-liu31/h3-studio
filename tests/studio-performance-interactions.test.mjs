@@ -67,6 +67,60 @@ test("result preview play icon and caption use independent positioning hooks", a
   assert.match(styles, /\.library-video-overlay\s*\{[^}]*left:\s*50%[^}]*top:\s*50%[^}]*translate:\s*-50%\s+-50%/s);
 });
 
+test("result videos lazy-load and keep their central play-pause control synchronized", async () => {
+  const source = await readFile(studioPath, "utf8");
+  const styles = await readFile(globalStylesPath, "utf8");
+  const resultThumbnail = between(source, "function ResultThumbnail(", "function ResultLibrary(");
+  const resultLibrary = between(source, "function ResultLibrary(", "function ParameterPanel(");
+
+  assert.match(resultThumbnail, /activated && videoSource[\s\S]*?<video\b/, "the video element is mounted only after activation");
+  assert.doesNotMatch(resultThumbnail.split("activated && videoSource")[0], /<video\b/, "opening Results must not eagerly fetch video bodies");
+  assert.match(resultThumbnail, /autoPlay playsInline preload="metadata"[^>]*onClick=\{togglePlayback\}/, "an explicit play click starts a player whose frame also toggles playback");
+  assert.doesNotMatch(resultThumbnail, /<video\b[^>]*\bcontrols\b/, "compact result cards do not duplicate the custom button with native controls");
+  assert.match(resultThumbnail, /video\.paused \|\| video\.ended[\s\S]*?video\.play\(\)[\s\S]*?video\.pause\(\)/, "the central result control toggles both states");
+  assert.match(resultThumbnail, /onPlay=\{\(\) => setPaused\(false\)\}[^>]*onPause=\{\(\) => setPaused\(true\)\}[^>]*onEnded=\{\(\) => setPaused\(true\)\}/, "native player events synchronize the overlay icon");
+  assert.match(resultThumbnail, /paused \? "▶" : "Ⅱ"/);
+  assert.match(resultThumbnail, /className="library-video-play result-library-video-play"/, "the existing asset-player interaction is reused visually");
+  assert.match(resultLibrary, /item\.media === "video" \? <div className="result-library-preview"/, "video controls are never nested inside the legacy preview button");
+  assert.match(resultLibrary, /className="result-library-preview-label result-library-open-canvas"[^>]*onClick=\{\(\) => onSelect\(item\)\}/, "canvas preview remains an independent action");
+  assert.match(styles, /\.result-library-video-play\s*>\s*img\s*\{[^}]*object-fit:\s*contain/s, "portrait result thumbnails retain their full frame");
+});
+
+test("asset and derived-result audio lazy-load and keep play-pause state synchronized", async () => {
+  const source = await readFile(studioPath, "utf8");
+  const styles = await readFile(globalStylesPath, "utf8");
+  const audioPlayer = between(source, "function LazyAudioPlayer(", "function LibraryAssetPreview(");
+  const assetPreview = between(source, "function LibraryAssetPreview(", "function AssetLibrary(");
+  const resultLibrary = between(source, "function ResultLibrary(", "function ParameterPanel(");
+
+  assert.match(audioPlayer, /activated && <audio\b/, "audio is mounted only after the first play action");
+  assert.doesNotMatch(audioPlayer.split("activated && <audio")[0], /<audio\b/, "drawers must not eagerly fetch audio bodies");
+  assert.match(audioPlayer, /autoPlay preload="metadata"/, "the first explicit click starts audio playback");
+  assert.match(audioPlayer, /audio\.paused \|\| audio\.ended[\s\S]*?audio\.play\(\)[\s\S]*?audio\.pause\(\)/, "the audio icon toggles both playback states");
+  assert.match(audioPlayer, /onPlay=\{\(\) => setPaused\(false\)\}[^>]*onPause=\{\(\) => setPaused\(true\)\}[^>]*onEnded=\{\(\) => setPaused\(true\)\}/, "real audio events synchronize the icon");
+  assert.match(audioPlayer, /paused \? "▶" : "Ⅱ"/);
+  assert.match(assetPreview, /<LazyAudioPlayer source=\{item\.contentUrl\} label=\{item\.filename\}/, "asset audio uses the interactive player");
+  assert.match(resultLibrary, /item\.kind === "audio" \? <LazyAudioPlayer source=\{item\.contentUrl\} label=\{item\.displayName\}/, "derived result audio uses the same player");
+  assert.match(styles, /\.library-audio-toggle\s*\{[^}]*cursor:\s*pointer/s);
+  assert.match(styles, /\.library-audio-state\s*\{[^}]*left:\s*50%[^}]*top:\s*50%[^}]*translate:\s*-50%\s+-50%/s, "the audio play-pause button is centered like the video control");
+  assert.match(styles, /\.library-audio-player\.playing \.library-audio-state/);
+});
+
+test("derived result videos use a real lazy play-pause control instead of a decorative icon", async () => {
+  const source = await readFile(studioPath, "utf8");
+  const videoPlayer = between(source, "function LazyVideoPlayer(", "function LibraryAssetPreview(");
+  const resultLibrary = between(source, "function ResultLibrary(", "function ParameterPanel(");
+
+  assert.match(videoPlayer, /if \(!activated\) return <button[^>]*className="library-video-play result-library-video-play"[^>]*onClick=\{\(\) => setActivated\(true\)\}/, "the idle play icon is an actionable button");
+  assert.doesNotMatch(videoPlayer.split("if (!activated)")[0], /<video\b/, "derived video bodies stay unloaded before activation");
+  assert.match(videoPlayer, /<video\b[^>]*autoPlay playsInline preload="metadata"[^>]*onClick=\{togglePlayback\}/, "the first click mounts and starts the player");
+  assert.doesNotMatch(videoPlayer, /<video\b[^>]*\bcontrols\b/, "derived cards expose only the centered custom control");
+  assert.match(videoPlayer, /video\.paused \|\| video\.ended[\s\S]*?video\.play\(\)[\s\S]*?video\.pause\(\)/, "the central control toggles playback");
+  assert.match(videoPlayer, /onPlay=\{\(\) => setPaused\(false\)\}[^>]*onPause=\{\(\) => setPaused\(true\)\}[^>]*onEnded=\{\(\) => setPaused\(true\)\}/, "native events synchronize the play-pause icon");
+  assert.match(resultLibrary, /item\.kind === "video" \? <LazyVideoPlayer source=\{item\.contentUrl\} label=\{item\.displayName\} thumbnailUrl=\{item\.thumbnailUrl\}/, "every derived video card uses the interactive player");
+  assert.doesNotMatch(resultLibrary, /item\.kind === "video" && <span className="library-video-overlay"/, "no decorative-only derived video control remains");
+});
+
 test("workflow persistence is debounced so pointer movement does not synchronously serialize local storage", async () => {
   const source = await readFile(studioPath, "utf8");
   assert.match(source, /localStorage\.setItem\(STORAGE_KEY/, "workflow persistence must remain enabled");
@@ -110,6 +164,28 @@ test("remote video asset nodes mount their player only after an explicit preview
     "the player must be gated by per-node preview state",
   );
   assert.match(assetPreview, /<video\b[^>]*\bcontrols\b/, "the explicitly loaded asset preview remains usable");
+});
+
+test("asset-library videos preserve portrait framing and play immediately on explicit click", async () => {
+  const source = await readFile(studioPath, "utf8");
+  const styles = await readFile(globalStylesPath, "utf8");
+  const preview = between(source, "function LibraryAssetPreview(", "function AssetLibrary(");
+
+  assert.match(preview, /mediaDisplayOrientation\(item\.media\)/, "server dimensions and rotation classify the display orientation");
+  assert.match(preview, /className="library-video-play"[^>]*onClick=\{\(\) => setActivated\(true\)\}/, "the play overlay is a real button action");
+  assert.match(preview, /activated \? [\s\S]*?<video\b/, "video bytes remain lazy until the user clicks play");
+  assert.match(preview, /<video\b[^>]*\bautoPlay\b[^>]*onClick=\{togglePlayback\}/, "a clicked card mounts an autoplaying player whose frame toggles playback");
+  assert.doesNotMatch(preview, /<video\b[^>]*\bcontrols\b/, "asset cards do not render a second native play button");
+  assert.match(preview, /video\.paused \|\| video\.ended[\s\S]*?video\.play\(\)[\s\S]*?video\.pause\(\)/, "the custom overlay toggles playback in both directions");
+  assert.match(preview, /onPlay=\{\(\) => setPaused\(false\)\}[^>]*onPause=\{\(\) => setPaused\(true\)\}/, "native playback keeps the visible overlay state synchronized");
+  assert.match(preview, /paused \? "▶" : "Ⅱ"/, "the overlay exposes an unambiguous play or pause icon");
+  assert.doesNotMatch(preview.split("activated ?")[0], /<video\b/, "the idle card must not eagerly mount a player");
+  assert.match(styles, /\.library-video-play\s*>\s*img\s*\{[^}]*object-fit:\s*contain/s, "portrait thumbnails are never landscape-cropped");
+  assert.match(styles, /\.library-video-player\s*>\s*video\s*\{[^}]*object-fit:\s*contain/s, "video playback never crops its source frame");
+  assert.match(styles, /\.library-video-player\s*\{[^}]*width:\s*100%[^}]*height:\s*100%/s, "the absolute player gives percentage-sized video a definite box");
+  assert.match(styles, /\.library-video-player\s*>\s*video\s*\{[^}]*position:\s*absolute[^}]*inset:\s*0[^}]*width:\s*100%[^}]*max-width:\s*100%[^}]*height:\s*100%[^}]*max-height:\s*100%[^}]*object-fit:\s*contain/s, "playback is constrained to the card before its portrait frame is contained");
+  assert.match(styles, /\.library-video-player\.paused\s+\.library-video-toggle\s*\{[^}]*opacity:\s*1/s, "paused playback always exposes its central control");
+  assert.match(styles, /\.asset-preview\[data-media-kind="video"\][^{]*\{[^}]*object-fit:\s*contain/s, "canvas video previews also preserve their full frame");
 });
 
 test("node drag rendering is animation-frame coalesced and pending work is safely cancelled", async () => {
