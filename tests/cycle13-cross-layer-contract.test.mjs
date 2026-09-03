@@ -51,7 +51,8 @@ test("Cycle 13 cross-layer contract matrix", async (t) => {
     assert.equal(timelinePromptPreview("unchanged", [], new Map(), "none", true), "unchanged; <Video 1>");
     const project = { title: "matrix", status: "draft", storyboard: draft.storyboard, segments: [{ ...draft.segments[0], request: { ...draft.segments[0].request, references: Array.from({ length: 6 }, (_, index) => ({ asset_id: index.toString(16).repeat(32), role: "reference" })) } }] };
     assert.match(validateVideoProject(project, [fl, ref]).join("\n"), /exceeds the six references budget/);
-    assert.match(serverSource, /reserved_references = int\(continuation != "none"\) \+ int\(source_range is not None\)/);
+    assert.match(serverSource, /pixel_continuation = continuation in \{"tail_frame", "previous_video"\}/);
+    assert.match(serverSource, /reserved_references = int\(pixel_continuation\) \+ int\(source_range is not None\)/);
     assert.match(serverSource, /_with_source_range_reference/);
   });
 

@@ -11,8 +11,21 @@ H3 的一次生成仍然是短片：**每个 segment 的生成请求必须在 5 
 1. `none`：首段独立生成。
 2. `tail_frame`：服务端从上一段永久输出提取尾帧，并把其资产回执绑定到本次 attempt。
 3. `previous_video`：服务端把上一段永久视频作为参考，并把来源段、来源任务、来源 SHA-256 和派生资产写入 attempt 回执。
+4. `motion_context`：复用上一段 H3 视频/音频 latent，按 `video_frames` 与 `audio_frames` 构造下一段上下文，并在保存前自动裁掉重复头部。Turbo LoRA 和 Base Direct Profile 都可使用；采样步数仍按当前 Profile 范围独立设置。
 
-后续段可以继续使用 `tail_frame` 或 `previous_video`。所有段必须使用相同画幅，合并时不做隐式拉伸或裁剪。客户端会拒绝并发激活多个段、后段早于前段启动、续接来源不匹配，以及缺少来源哈希的“看似完成”回执。
+后续段可以继续使用任一种续接方式。`tail_frame` / `previous_video` 消耗一个 H3 像素参考槽；`motion_context` 不消耗参考槽，但相邻生成段必须保持完全相同的输出尺寸。最终合并仍使用裁剪后的完整分段输出；直接导入的不同尺寸视频由原有合并管线按目标画布规范化，不能作为 Motion Context latent 前驱。客户端会拒绝并发激活多个段、后段早于前段启动、续接来源不匹配，以及缺少来源哈希的“看似完成”回执。
+
+Motion Context 的视频窗口只能是 5、22、39 或 56 帧，音频窗口为 0..240 帧，默认分别为 22 与 24。上下文文件采用独立磁盘配额、原子复制与 SHA-256 校验；保存失败不会把已经落盘的 MP4 改判失败，但会明确阻断依赖它的下一段。安装版本、CLI Spec 和恢复流程见 [Motion Context 长视频说明](motion-context-long-video.md)。
+
+## Go CLI 一键成片
+
+推荐给 Agent 的主入口是：
+
+```bash
+h3ctl video compose --spec ./trilogy.json --to ./final.mp4 --timeout 0
+```
+
+它依次完成 Profile 身份补全、项目创建、顺序生成、续接裁头、合并等待和最终原子下载。连接中断不会取消服务端项目；回执中的 `project_id` 可继续交给 `h3ctl project get|run|wait|merge|download`。`h3ctl video trim` 是现有媒体裁剪的领域别名，`h3ctl video concat PROJECT_ID` 是项目合并的领域别名。
 
 ## 准备 manifest
 

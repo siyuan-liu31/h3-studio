@@ -2,6 +2,7 @@ package operation
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/url"
@@ -216,8 +217,115 @@ func Execute(ctx context.Context, runtime Runtime, name string, input map[string
 		return jsonAction(ctx, s, http.MethodPost, "/api/video-projects/"+url.PathEscape(require("project_id"))+"/segments/"+url.PathEscape(require("segment_id"))+"/run", map[string]any{})
 	case "project.download":
 		return s.API.Download(ctx, "/api/video-projects/"+url.PathEscape(require("project_id"))+"/merged/download", require("to"), boolValue(input["force"]))
+	case "video.compose":
+		spec, _ := input["spec"].(map[string]any)
+		return s.ComposeVideo(ctx, spec, require("to"), boolValue(input["force"]), WaitOptions{
+			Timeout:      durationSeconds(input["timeout_seconds"]),
+			PollInterval: durationSeconds(input["poll_seconds"]),
+			OnEvent:      runtime.OnEvent,
+		})
 	default:
 		return nil, contract.NewError("not_found", "operation not found")
+	}
+}
+
+func (s *Service) ComposeVideo(ctx context.Context, spec map[string]any, destination string, force bool, options WaitOptions) (map[string]any, error) {
+	pinned, err := s.pinProjectProfiles(ctx, spec)
+	if err != nil {
+		return nil, composeError("profile", "", err)
+	}
+	created, err := jsonActionWithID(ctx, s, http.MethodPost, "/api/video-projects", pinned, "project_id", "id")
+	if err != nil {
+		return nil, composeError("create", "", err)
+	}
+	projectID := stringValue(created["id"], "")
+	if options.OnEvent != nil {
+		options.OnEvent(map[string]any{"type": "project_created", "project_id": projectID, "phase": "create"})
+	}
+	if _, err = jsonAction(ctx, s, http.MethodPost, "/api/video-projects/"+url.PathEscape(projectID)+"/run", map[string]any{}); err != nil {
+		return nil, composeError("run", projectID, err)
+	}
+	if _, err = s.WaitProject(ctx, projectID, options.Timeout, options.PollInterval, options.OnEvent); err != nil {
+		return nil, composeError("generate", projectID, err)
+	}
+	if _, err = jsonAction(ctx, s, http.MethodPost, "/api/video-projects/"+url.PathEscape(projectID)+"/merge", map[string]any{}); err != nil {
+		return nil, composeError("merge", projectID, err)
+	}
+	project, err := s.WaitProject(ctx, projectID, options.Timeout, options.PollInterval, options.OnEvent)
+	if err != nil {
+		return nil, composeError("merge_wait", projectID, err)
+	}
+	download, err := s.API.Download(ctx, "/api/video-projects/"+url.PathEscape(projectID)+"/merged/download", destination, force)
+	if err != nil {
+		return nil, composeError("download", projectID, err)
+	}
+	return map[string]any{"project_id": projectID, "project": project, "download": download}, nil
+}
+
+func (s *Service) pinProjectProfiles(ctx context.Context, spec map[string]any) (map[string]any, error) {
+	raw, err := json.Marshal(spec)
+	if err != nil {
+		return nil, contract.NewError("invalid_spec", "project spec cannot be encoded")
+	}
+	pinned := map[string]any{}
+	if err := json.Unmarshal(raw, &pinned); err != nil {
+		return nil, contract.NewError("invalid_spec", "project spec cannot be copied")
+	}
+	segments, _ := pinned["segments"].([]any)
+	needsProfiles := false
+	for _, rawSegment := range segments {
+		segment, _ := rawSegment.(map[string]any)
+		request, _ := segment["request"].(map[string]any)
+		if request != nil && (stringValue(request["profile_version"], "") == "" || stringValue(request["profile_digest"], "") == "") {
+			needsProfiles = true
+		}
+	}
+	if !needsProfiles {
+		return pinned, nil
+	}
+	capabilities, err := s.API.Get(ctx, "/api/capabilities")
+	if err != nil {
+		return nil, err
+	}
+	profiles, _ := capabilities["profiles"].([]any)
+	byID := map[string]map[string]any{}
+	for _, rawProfile := range profiles {
+		profile, _ := rawProfile.(map[string]any)
+		if id := stringValue(profile["id"], ""); id != "" {
+			byID[id] = profile
+		}
+	}
+	for _, rawSegment := range segments {
+		segment, _ := rawSegment.(map[string]any)
+		request, _ := segment["request"].(map[string]any)
+		if request == nil {
+			continue
+		}
+		id := stringValue(request["profile_id"], "")
+		profile := byID[id]
+		if profile == nil || profile["available"] != true {
+			return nil, &contract.CLIError{Code: "profile_unavailable", Message: "project segment profile is unavailable", Details: map[string]any{"profile_id": id}}
+		}
+		if stringValue(request["profile_version"], "") == "" {
+			request["profile_version"] = profile["version"]
+		}
+		if stringValue(request["profile_digest"], "") == "" {
+			request["profile_digest"] = profile["manifest_sha256"]
+		}
+	}
+	return pinned, nil
+}
+
+func composeError(phase, projectID string, err error) error {
+	details := map[string]any{"phase": phase}
+	if projectID != "" {
+		details["project_id"] = projectID
+	}
+	return &contract.CLIError{
+		Code:    "video_compose_failed",
+		Message: "video composition failed during " + phase,
+		Details: details,
+		Cause:   err,
 	}
 }
 

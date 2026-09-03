@@ -28,6 +28,7 @@ ComfyUI 和模型是最大的机器相关部分。不应在未确认授权、显
 | 只启动界面/API | Python、Node.js/npm、FFmpeg、前端构建 | 管理界面和数据；没有 ComfyUI 时不能生成 |
 | H3 Base 视频 | 上述内容 + ComfyUI + H3/KJNodes 节点 + FL2VA 或 Ref2VA 模型 + 文本编码器 + 两个 VAE | 使用 Base Profile 生成音视频 |
 | H3 Turbo 视频 | H3 Base + 对应 Turbo LoRA | 使用默认的 4 步 Turbo Profile |
+| H3 Motion Context 长视频 | H3 Base/Turbo + 锁定的 Motion Context 自定义节点 | 用 latent 上下文连续生成、去除重叠头帧并合并成片 |
 | 图片生成/编辑 | 上述应用 + 所选图片 Profile 的节点和模型 | Z-Image、Qwen-Image、FLUX.2 或兼容 checkpoint |
 | 音色转换 | 独立 Python 3.10 环境 + Vevo2 或 YingMusic-SVC + 对应权重 | CLI/Agent 的语音、演唱或完整歌曲换声 |
 | 更佳智能分镜 | 可选 `scenedetect>=0.6.4,<0.8` | 优先使用 PySceneDetect；否则自动用 FFmpeg |
@@ -148,6 +149,22 @@ COMFY_PYTHON=/path/to/ComfyUI/.venv/bin/python
 
 本项目的 R2V/V2V/RV2V 使用 ComfyUI 原生 `MiniMaxH3ReferenceToVideo`，不需要安装 `MiniMaxH3Director` 自定义节点。
 
+Motion Context 长视频需要 ComfyUI `>=0.34.0` 和锁定的
+[ComfyUI-H3-Motion-Context](https://github.com/NikoDemon80/ComfyUI-H3-Motion-Context)
+`v0.5.1` (`429e952ae5c09b54f44cb6e3bef7331d998f0656`)。它是外部
+GPL-3.0 自定义节点，不随本项目分发；只在需要长视频时安装到开发机：
+
+```bash
+cd /path/to/ComfyUI/custom_nodes
+git clone https://github.com/NikoDemon80/ComfyUI-H3-Motion-Context.git
+git -C ComfyUI-H3-Motion-Context checkout 429e952ae5c09b54f44cb6e3bef7331d998f0656
+```
+
+安装或切换版本后重启 ComfyUI，再用 `/api/capabilities` 确认
+`video.motion_context.available=true`。应同时报告 `MiniMaxH3MotionContext`和
+`MiniMaxH3MotionContextTrim`的精确输入合同；仅目录存在不代表节点已成功加载。
+完整运行、存储与恢复语义见 [Motion Context 长视频](motion-context-long-video.md)。
+
 一手来源：
 
 - [ComfyUI 原生 H3 节点实现](https://github.com/Comfy-Org/ComfyUI/blob/master/comfy_extras/nodes_minimax_h3.py)
@@ -200,8 +217,7 @@ cp .env.example .env.local
 - `H3_STUDIO_DATA_ROOT`：持久资产、任务、派生媒体和项目目录；
 - `H3_STUDIO_COMFY_INPUT` / `H3_STUDIO_COMFY_OUTPUT`：ComfyUI input/output 目录；
 - `H3_STUDIO_*_MODEL` / `H3_STUDIO_*_LORA`：与实际文件一致的模型绑定；
-- `H3_STUDIO_API_KEY`：用强随机值替换 `change-me`；
-- `H3_STUDIO_PROXY_API_KEY`：如显式设置，必须与 API Key 相同。
+- `H3_STUDIO_API_KEY` / `H3_STUDIO_PROXY_API_KEY`：loopback 或 SSH 隧道使用时均留空；只有公网部署需要鉴权时才设置，并使用相同的强随机值。
 
 `.env.local` 不得提交到 Git。建议把数据目录和 ComfyUI input/output 放在持久数据盘，不要放在会被新 release 替换的代码目录中。
 

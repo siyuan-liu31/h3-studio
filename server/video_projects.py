@@ -21,10 +21,11 @@ from .comfy import ComfyClient, find_outputs
 from .comfy_tasks import ComfyTaskCoordinator
 from .config import Config
 from .errors import ApiError
+from .motion_context import MotionContextStore
 from .profiles import H3_MAX_DURATION_SECONDS, ProfileRegistry
 from .security import secure_join, validate_id
 from .storage import AssetStore, JobStore, JsonStore
-from .workflows import compile_workflow, parse_generation_request, workflow_evidence
+from .workflows import MotionContextPlan, compile_workflow, parse_generation_request, workflow_evidence
 
 
 # This is an abuse/body-complexity ceiling, not a duration limit. At H3's
@@ -34,7 +35,7 @@ MAX_SOURCE_FPS = 240.0
 MAX_SOURCE_FRAMES = 10_000_000
 TERMINAL_JOBS = {"completed", "failed", "canceled"}
 ACTIVE_JOBS = {"submitting", "queued", "running"}
-CONTINUATIONS = {"none", "tail_frame", "previous_video"}
+CONTINUATIONS = {"none", "tail_frame", "previous_video", "motion_context"}
 POLL_SECONDS = 0.1
 SUBMIT_RECONCILE_INTERVAL_SECONDS = 2.0
 LITERAL_REFERENCE_TAG = re.compile(r"<(?:Picture|Video|Audio)\s+\d+>", re.IGNORECASE)
@@ -67,6 +68,7 @@ class VideoProjectManager:
         *,
         command_runner: Callable[..., Any] = subprocess.run,
         comfy_tasks: ComfyTaskCoordinator | None = None,
+        motion_contexts: MotionContextStore | None = None,
     ) -> None:
         self.config = config
         self.assets = assets
@@ -77,6 +79,7 @@ class VideoProjectManager:
         self.store = JsonStore(config.data_root / "metadata" / "video-projects")
         self.command_runner = command_runner
         self.comfy_tasks = comfy_tasks
+        self.motion_contexts = motion_contexts or MotionContextStore(config)
         self._workers: dict[str, threading.Thread] = {}
         self._merge_processes: dict[str, subprocess.Popen[str]] = {}
         self._merge_cancel_events: dict[str, threading.Event] = {}
@@ -142,6 +145,7 @@ class VideoProjectManager:
                     and old.get("kind", "generation") == segment.get("kind", "generation")
                     and old.get("request") == segment.get("request")
                     and old.get("continuation") == segment["continuation"]
+                    and old.get("motion_context") == segment.get("motion_context")
                     and not media_changed
                     and not source_changed
                     and not continuation_range_changed
@@ -217,6 +221,7 @@ class VideoProjectManager:
             else:
                 project["storyboard"] = storyboard
             self.store.put(project_id, project)
+            self._prune_motion_contexts(project)
         return self.receipt(project)
 
     def run(self, project_id: str, segment_ids: Any = None) -> dict[str, Any]:
@@ -254,6 +259,7 @@ class VideoProjectManager:
                 "updated_at": time.time(),
             })
             self.store.put(project_id, project)
+            self._prune_motion_contexts(project)
             if remaining:
                 self._start(project_id, self._run_project, remaining[0])
         return self.receipt(project)
@@ -376,6 +382,7 @@ class VideoProjectManager:
                 "stop_requested": False, "updated_at": time.time(),
             })
             self.store.put(project_id, project)
+            self._prune_motion_contexts(project)
             # This endpoint is intentionally exact: a single click may spend
             # for only the selected segment.  Dependent clips stay stale until
             # the user explicitly runs them or the whole project.
@@ -397,9 +404,15 @@ class VideoProjectManager:
                 raise ApiError(409, "project_busy", "stop the project before deleting it")
             reclaimed = self._reclaim_segment_assets(project, range(len(project.get("segments", []))), deleting=True)
             self._cleanup_merge_paths(project)
+            reclaimed_contexts = self.motion_contexts.delete_project(project_id)
             self.store.delete(project_id)
             reclaimed += self._reclaim_orphaned_derived_assets(owner_project_id=project_id)
-        return {"id": project_id, "deleted": True, "reclaimed_derived_assets": reclaimed}
+        return {
+            "id": project_id,
+            "deleted": True,
+            "reclaimed_derived_assets": reclaimed,
+            "reclaimed_motion_contexts": reclaimed_contexts,
+        }
 
     def merge(self, project_id: str) -> dict[str, Any]:
         project_id = validate_id(project_id, "project id")
@@ -500,7 +513,7 @@ class VideoProjectManager:
         for index, raw in enumerate(raw_segments):
             if not isinstance(raw, dict) or set(raw) - {
                 "id", "kind", "continuation", "request", "source_range", "continuation_range",
-                "media_source",
+                "media_source", "motion_context",
             }:
                 raise ApiError(400, "invalid_segment", f"segment {index + 1} has unsupported fields")
             supplied_id = raw.get("id")
@@ -511,7 +524,7 @@ class VideoProjectManager:
             if kind not in {"generation", "media"}:
                 raise ApiError(400, "invalid_segment_kind", "segment kind must be generation or media")
             if kind == "media":
-                if any(raw.get(key) is not None for key in ("request", "source_range", "continuation_range")):
+                if any(raw.get(key) is not None for key in ("request", "source_range", "continuation_range", "motion_context")):
                     raise ApiError(400, "invalid_media_segment", "direct media segments cannot contain H3 request or reference fields")
                 if str(raw.get("continuation", "none")) != "none":
                     raise ApiError(400, "invalid_media_segment", "direct media segments cannot use H3 continuation")
@@ -527,7 +540,8 @@ class VideoProjectManager:
                 raise ApiError(400, "invalid_generation_segment", "generation segments cannot contain media_source")
             continuation = str(raw.get("continuation", "none"))
             if continuation not in CONTINUATIONS or (index == 0 and continuation != "none"):
-                raise ApiError(400, "invalid_continuation", "continuation must be none, tail_frame, or previous_video; the first segment must use none")
+                raise ApiError(400, "invalid_continuation", "continuation must be none, tail_frame, previous_video, or motion_context; the first segment must use none")
+            motion_context = self._validate_motion_context(raw.get("motion_context"), continuation)
             source_range = self._validate_source_range(raw.get("source_range"), storyboard)
             previous_expected_frames: int | None = None
             if index > 0:
@@ -551,9 +565,29 @@ class VideoProjectManager:
                 segment["source_range"] = source_range
             if continuation_range is not None:
                 segment["continuation_range"] = continuation_range
+            if motion_context is not None:
+                segment["motion_context"] = motion_context
             result.append(segment)
             seen.add(segment_id)
         return title.strip(), result, storyboard
+
+    @staticmethod
+    def _validate_motion_context(value: Any, continuation: str) -> dict[str, int] | None:
+        if continuation != "motion_context":
+            if value is not None:
+                raise ApiError(400, "motion_context_mode", "motion_context settings require motion_context continuation")
+            return None
+        if value is None:
+            value = {}
+        if not isinstance(value, dict) or set(value) - {"video_frames", "audio_frames"}:
+            raise ApiError(400, "invalid_motion_context", "motion_context accepts only video_frames and audio_frames")
+        video_frames = value.get("video_frames", 22)
+        audio_frames = value.get("audio_frames", 24)
+        if isinstance(video_frames, bool) or video_frames not in {5, 22, 39, 56}:
+            raise ApiError(400, "invalid_motion_context", "video_frames must be 5, 22, 39, or 56")
+        if isinstance(audio_frames, bool) or not isinstance(audio_frames, int) or not 0 <= audio_frames <= 240:
+            raise ApiError(400, "invalid_motion_context", "audio_frames must be an integer from 0 through 240")
+        return {"video_frames": int(video_frames), "audio_frames": audio_frames}
 
     @staticmethod
     def _finite_number(value: Any, label: str) -> float:
@@ -843,7 +877,8 @@ class VideoProjectManager:
                     normalized[key] = item[key]
             normalized_refs.append(normalized)
             seen.add(asset_id)
-        reserved_references = int(continuation != "none") + int(source_range is not None)
+        pixel_continuation = continuation in {"tail_frame", "previous_video"}
+        reserved_references = int(pixel_continuation) + int(source_range is not None)
         if len(normalized_refs) > 6 - reserved_references:
             raise ApiError(
                 400, "too_many_references",
@@ -871,7 +906,7 @@ class VideoProjectManager:
             request["prompt_mode"] = prompt_mode
         if prompt_mode == "default" and isinstance(parts, dict):
             request["parts"] = dict(parts)
-        if continuation != "none" or source_range is not None:
+        if pixel_continuation or source_range is not None:
             values: list[str] = [request["prompt"]]
             if isinstance(parts, dict):
                 stack: list[Any] = [parts]
@@ -913,6 +948,14 @@ class VideoProjectManager:
                 raise ApiError(400, "continuation_profile", "previous_video requires a Ref2VA profile")
             if any(str(ref.get("role")) in {"first_frame", "last_frame"} for ref in normalized_refs):
                 raise ApiError(400, "mixed_reference_modes", "previous_video cannot be mixed with FL first/last frames")
+        elif continuation == "motion_context":
+            if profile.compiler not in {"h3_fl", "h3_ref"}:
+                raise ApiError(400, "continuation_profile", "motion_context requires an H3 video profile")
+            if any(str(ref.get("role")) == "first_frame" for ref in normalized_refs):
+                raise ApiError(
+                    400, "motion_context_first_frame_conflict",
+                    "motion_context owns the opening frames and cannot be combined with a first_frame reference",
+                )
 
         # Preflight the exact typed request, including every slot that will be
         # materialized locally before submit. This prevents a later segment
@@ -940,7 +983,7 @@ class VideoProjectManager:
                     "has_video": True, "has_audio": False,
                 },
             }
-        if continuation != "none":
+        if pixel_continuation:
             continuation_id = next(placeholders)
             preflight = self._with_continuation_reference(preflight, continuation, continuation_id)
             synthetic[continuation_id] = {
@@ -1027,6 +1070,8 @@ class VideoProjectManager:
                 public["source_range"] = dict(segment["source_range"])
             if isinstance(segment.get("continuation_range"), dict):
                 public["continuation_range"] = dict(segment["continuation_range"])
+            if isinstance(segment.get("motion_context"), dict):
+                public["motion_context"] = dict(segment["motion_context"])
             for key in ("job_id", "error"):
                 if segment.get(key) is not None:
                     public[key] = segment[key]
@@ -1168,6 +1213,7 @@ class VideoProjectManager:
         if not job_id:
             try:
                 request, evidence = self._prepare_request(project, index)
+                motion_execution = self._motion_execution(project, index)
                 with self.lock:
                     durable = self.store.get(project_id)
                     if durable.get("stop_requested"):
@@ -1177,7 +1223,10 @@ class VideoProjectManager:
                     durable_attempt = next(a for a in durable_segment["attempts"] if a["id"] == attempt["id"])
                     durable_attempt["continuation"] = evidence
                     self.store.put(project_id, durable)
-                job_id = self._submit_segment(request, project_id, str(segment["id"]), str(attempt["id"]))
+                job_id = self._submit_segment(
+                    request, project_id, str(segment["id"]), str(attempt["id"]),
+                    motion_execution=motion_execution,
+                )
                 submitted_job = self.jobs.get(job_id)
                 with self.lock:
                     project = self.store.get(project_id)
@@ -1253,13 +1302,17 @@ class VideoProjectManager:
                         segment["error"] = str(job.get("message", "generation failed"))
                         active["error"] = segment["error"]
                         project["status"] = "stopped" if state == "canceled" else "failed"
+                    if isinstance(job.get("motion_context_state"), dict):
+                        active["motion_context_state"] = dict(job["motion_context_state"])
                     project["updated_at"] = time.time()
                     self.store.put(project_id, project)
                     return state == "completed"
                 self.store.put(project_id, project)
             time.sleep(POLL_SECONDS)
 
-    def _prepare_request(self, project: dict[str, Any], index: int) -> tuple[dict[str, Any], dict[str, Any]]:
+    def _prepare_request(
+        self, project: dict[str, Any], index: int,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
         segment = project["segments"][index]
         request = json.loads(json.dumps(segment["request"]))
         # Long-video execution always follows the same read-only prompt policy
@@ -1294,6 +1347,32 @@ class VideoProjectManager:
             "source_job_id": source_job["id"],
             "source_sha256": source_sha,
         })
+        if mode == "motion_context":
+            current_spec = parse_generation_request(
+                {**request, "output_type": "video"}, self.assets.get, self.registry,
+            )
+            source_parameters = source_job.get("parameters") if isinstance(source_job.get("parameters"), dict) else {}
+            source_width = int(source_parameters.get("width", 0) or 0)
+            source_height = int(source_parameters.get("height", 0) or 0)
+            if (source_width, source_height) != (current_spec.width, current_spec.height):
+                raise ApiError(
+                    409, "motion_context_resolution_mismatch",
+                    f"Motion Context requires matching adjacent resolutions; previous is {source_width}x{source_height}, current is {current_spec.width}x{current_spec.height}",
+                )
+            manifest = self.motion_contexts.get(str(source_job["id"]))
+            settings = segment.get("motion_context") if isinstance(segment.get("motion_context"), dict) else {}
+            video_frames = int(settings.get("video_frames", 22))
+            audio_frames = int(settings.get("audio_frames", 24))
+            evidence.update({
+                "video_frames": video_frames,
+                "audio_frames": audio_frames,
+                "context_sha256": manifest.get("sha256"),
+                "context_size": manifest.get("size"),
+                "lossless_latent": True,
+                "trim": "head_video_and_audio",
+                "match_tail": True,
+            })
+            return request, evidence
         temp = self.config.data_root / "tmp" / f"continuation-{uuid.uuid4().hex}"
         if mode == "tail_frame":
             temp = temp.with_suffix(".png")
@@ -1515,6 +1594,28 @@ class VideoProjectManager:
         parse_generation_request({**request, "output_type": "video"}, self.assets.get, self.registry)
         return request, evidence
 
+    def _motion_execution(self, project: dict[str, Any], index: int) -> dict[str, Any]:
+        segments = project.get("segments", [])
+        execution: dict[str, Any] = {
+            "save_context": (
+                index + 1 < len(segments)
+                and segments[index + 1].get("kind", "generation") == "generation"
+                and segments[index + 1].get("continuation") == "motion_context"
+            ),
+        }
+        segment = segments[index]
+        if segment.get("continuation") != "motion_context":
+            return execution
+        source = segments[index - 1]
+        source_job_id = validate_id(str(source.get("job_id", "")), "source job id")
+        settings = segment.get("motion_context") if isinstance(segment.get("motion_context"), dict) else {}
+        execution.update({
+            "source_manifest": self.motion_contexts.get(source_job_id),
+            "video_frames": int(settings.get("video_frames", 22)),
+            "audio_frames": int(settings.get("audio_frames", 24)),
+        })
+        return execution
+
     def _prepare_source_range_reference(
         self,
         project: dict[str, Any],
@@ -1664,7 +1765,16 @@ class VideoProjectManager:
         )
         return result
 
-    def _submit_segment(self, request: dict[str, Any], project_id: str, segment_id: str, attempt_id: str) -> str:
+    def _submit_segment(
+        self,
+        request: dict[str, Any],
+        project_id: str,
+        segment_id: str,
+        attempt_id: str,
+        *,
+        motion_execution: dict[str, Any] | None = None,
+    ) -> str:
+        motion_execution = motion_execution or {}
         with self.lock:
             active = [job for job in self.jobs.list() if job.get("status") in ACTIVE_JOBS]
             if len(active) >= self.config.max_active_jobs:
@@ -1688,12 +1798,43 @@ class VideoProjectManager:
                     for ref in spec.references
                 ],
                 "video_project_id": project_id, "segment_id": segment_id, "attempt_id": attempt_id,
+                "motion_context_save_pending": bool(motion_execution.get("save_context")),
                 "created_at": now, "updated_at": now, "submission_started_at": now,
             }
             self.jobs.put(job_id, job)
+        staged_path: Path | None = None
         try:
             self.comfy.ensure_capability(spec, self.config, self.registry)
-            workflow = compile_workflow(spec, self.config, job_id)
+            motion_plan: MotionContextPlan | None = None
+            source_manifest = motion_execution.get("source_manifest")
+            if source_manifest is not None or motion_execution.get("save_context"):
+                ensure_motion_context = getattr(self.comfy, "ensure_motion_context", None)
+                if not callable(ensure_motion_context):
+                    raise ApiError(503, "motion_context_unavailable", "ComfyUI client cannot verify Motion Context support")
+                ensure_motion_context(self.config, self.registry)
+                checkpoint_input = ""
+                if isinstance(source_manifest, dict):
+                    checkpoint_input, staged_path = self.motion_contexts.stage(source_manifest, job_id)
+                    job["motion_context_staged_file"] = staged_path.name
+                motion_plan = MotionContextPlan(
+                    checkpoint_input=checkpoint_input,
+                    save_context=bool(motion_execution.get("save_context")),
+                    video_frames=int(motion_execution.get("video_frames", 22)),
+                    audio_frames=int(motion_execution.get("audio_frames", 24)),
+                )
+                job["motion_context"] = {
+                    "enabled": bool(checkpoint_input),
+                    "save_pending": motion_plan.save_context,
+                    "video_frames": motion_plan.video_frames,
+                    "audio_frames": motion_plan.audio_frames,
+                    **({
+                        "source_job_id": source_manifest.get("job_id"),
+                        "source_sha256": source_manifest.get("sha256"),
+                    } if isinstance(source_manifest, dict) else {}),
+                }
+            workflow = compile_workflow(
+                spec, self.config, job_id, motion_context_plan=motion_plan,
+            )
             encoded = json.dumps(workflow, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
             job["workflow_sha256"] = hashlib.sha256(encoded).hexdigest()
             job["workflow_evidence"] = {
@@ -1725,8 +1866,10 @@ class VideoProjectManager:
                 else:
                     prompt_id = self.comfy.submit(workflow, str(job["client_id"]))
         except GenerationStopped:
+            self.motion_contexts.cleanup_staged(staged_path)
             raise
         except Exception as error:
+            self.motion_contexts.cleanup_staged(staged_path)
             job.update({"status": "failed", "message": error.message if isinstance(error, ApiError) else "generation submission failed", "updated_at": time.time()})
             self.jobs.put(job_id, job)
             raise
@@ -1738,6 +1881,8 @@ class VideoProjectManager:
     def _poll_job(self, job_id: str) -> dict[str, Any]:
         job = self.jobs.get(job_id)
         if job.get("status") in TERMINAL_JOBS:
+            if self._cleanup_motion_staging(job):
+                self.jobs.put(job_id, job)
             return job
         if job.get("status") == "submitting":
             if self.comfy_tasks is not None:
@@ -1783,8 +1928,32 @@ class VideoProjectManager:
                 status["message"] = "ComfyUI completed without an expected video output"
             else:
                 job["outputs"] = [self._enrich_output(output) for output in outputs]
+                if job.get("motion_context_save_pending"):
+                    try:
+                        manifest = self.motion_contexts.capture(
+                            job,
+                            record,
+                            project_id=str(job.get("video_project_id", "")),
+                            segment_id=str(job.get("segment_id", "")),
+                            attempt_id=str(job.get("attempt_id", "")),
+                        )
+                        job["motion_context_state"] = {
+                            "available": True,
+                            "sha256": manifest.get("sha256"),
+                            "size": manifest.get("size"),
+                        }
+                    except Exception as error:
+                        # The MP4 is the primary result. Context persistence is
+                        # best effort and may only block the following link.
+                        job["motion_context_state"] = {
+                            "available": False,
+                            "error": error.message if isinstance(error, ApiError) else "Motion Context latent could not be stored",
+                        }
+                self._cleanup_motion_staging(job)
         if self.comfy_tasks is not None and state in TERMINAL_JOBS:
             self.comfy_tasks.notify_terminal(job, state)
+        if state in TERMINAL_JOBS:
+            self._cleanup_motion_staging(job)
         with self.lock:
             latest = self.jobs.get(job_id)
             if latest.get("status") in TERMINAL_JOBS:
@@ -1794,6 +1963,17 @@ class VideoProjectManager:
                 job["message"] = str(status["message"])
             self.jobs.put(job_id, job)
         return job
+
+    def _cleanup_motion_staging(self, job: dict[str, Any]) -> bool:
+        staged_name = job.pop("motion_context_staged_file", None)
+        if not isinstance(staged_name, str):
+            return False
+        try:
+            staged = secure_join(self.motion_contexts.input_root, staged_name)
+        except ApiError:
+            staged = None
+        self.motion_contexts.cleanup_staged(staged)
+        return True
 
     def _import_continuation_asset(
         self,
@@ -1983,6 +2163,18 @@ class VideoProjectManager:
                     evidence["asset_reclaimed_reason"] = "project deleted" if deleting else "attempt superseded"
                     reclaimed += 1
         return reclaimed
+
+    def _prune_motion_contexts(self, project: dict[str, Any]) -> int:
+        """Keep only current predecessor latents that a chain can still consume."""
+        segments = project.get("segments", [])
+        keep: set[str] = set()
+        for index in range(max(0, len(segments) - 1)):
+            source = segments[index]
+            target = segments[index + 1]
+            job_id = source.get("job_id")
+            if target.get("continuation") == "motion_context" and isinstance(job_id, str):
+                keep.add(job_id)
+        return self.motion_contexts.prune_project(str(project["id"]), keep)
 
     @staticmethod
     def _attempt_derived_evidence(attempt: Any) -> list[dict[str, Any]]:

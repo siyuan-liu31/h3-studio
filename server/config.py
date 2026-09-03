@@ -67,6 +67,10 @@ class Config:
     comfy_idle_poll_seconds: int = 15
     checkpoint_ttl_hours: int = 48
     checkpoint_gc_seconds: int = 30 * 60
+    # Motion Context latents are durable project state, not Python/GPU memory.
+    # Superseded chain links are pruned and the remaining files share this
+    # explicit disk budget.
+    max_motion_context_storage_bytes: int = 200 * 1024 * 1024 * 1024
     gpu_architecture: str = "auto"
     attention_backend: str = "SageAttention"
     h3_token_risk_threshold: int = 150_000
@@ -190,6 +194,10 @@ class Config:
             checkpoint_gc_seconds=_integer(
                 "H3_STUDIO_CHECKPOINT_GC_SECONDS", 30 * 60, minimum=0
             ),
+            max_motion_context_storage_bytes=_integer(
+                "H3_STUDIO_MAX_MOTION_CONTEXT_STORAGE_BYTES",
+                200 * 1024 * 1024 * 1024,
+            ),
             gpu_architecture=os.environ.get("H3_STUDIO_GPU_ARCHITECTURE", "auto").strip() or "auto",
             attention_backend=os.environ.get("H3_STUDIO_ATTENTION_BACKEND", "SageAttention").strip() or "SageAttention",
             h3_token_risk_threshold=_integer("H3_STUDIO_H3_TOKEN_RISK_THRESHOLD", 150_000),
@@ -232,14 +240,17 @@ class Config:
             self.data_root / "metadata" / "asset-folders",
             self.data_root / "metadata" / "derivations",
             self.data_root / "metadata" / "checkpoints",
+            self.data_root / "metadata" / "motion-context",
             self.data_root / "metadata" / "voice-tasks",
             self.data_root / "derivations",
             self.data_root / "checkpoints",
+            self.data_root / "motion-context",
             self.data_root / "voice-results",
             self.data_root / "model-cache",
             self.data_root / "logs",
             self.data_root / "thumbnails",
             self.data_root / "tmp",
             self.comfy_input / "h3-studio",
+            self.comfy_input / "h3-studio-motion-context",
         ):
             path.mkdir(parents=True, exist_ok=True)

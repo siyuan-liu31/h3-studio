@@ -86,7 +86,7 @@ func TestEveryPublishedSchemaCompilesAsDraft202012(t *testing.T) {
 }
 
 func TestRegistryAndExecuteCoverWorkflowAtoms(t *testing.T) {
-	required := []string{"asset.copy", "media.endpoints", "media.prepare_reference", "media.save", "media.download", "project.create", "project.apply", "project.list", "project.get", "project.wait", "project.run", "project.merge", "project.download", "job.list", "job.get", "job.wait", "job.resume", "job.cancel", "job.download", "job.save", "job.delete", "generate.image", "generate.video"}
+	required := []string{"asset.copy", "media.endpoints", "media.prepare_reference", "media.save", "media.download", "project.create", "project.apply", "project.list", "project.get", "project.wait", "project.run", "project.merge", "project.download", "video.compose", "job.list", "job.get", "job.wait", "job.resume", "job.cancel", "job.download", "job.save", "job.delete", "generate.image", "generate.video"}
 	names := map[string]bool{}
 	for _, definition := range Definitions() {
 		names[definition.Name] = true
@@ -233,6 +233,7 @@ func TestEveryPublishedOperationExecutesAndRejectsUnknownInput(t *testing.T) {
 		{"project.rerun", fmt.Sprintf(`{"project_id":%q,"segment_id":%q}`, idD, idA), "POST", "/api/video-projects/" + idD + "/segments/" + idA + "/run", "", nil, 1},
 		{"project.merge", fmt.Sprintf(`{"project_id":%q}`, idD), "POST", "/api/video-projects/" + idD + "/merge", "", nil, 1},
 		{"project.download", fmt.Sprintf(`{"project_id":%q,"to":%q}`, idD, filepath.Join(temp, "project.bin")), "GET", "/api/video-projects/" + idD + "/merged/download", "", nil, 1},
+		{"video.compose", fmt.Sprintf(`{"spec":{"title":"film","segments":[]},"to":%q,"poll_seconds":0.001}`, filepath.Join(temp, "composed.mp4")), "GET", "/api/video-projects/" + idD + "/merged/download", "", nil, 6},
 	}
 	if len(tests) != len(Definitions()) {
 		t.Fatalf("execution matrix has %d cases for %d definitions", len(tests), len(Definitions()))

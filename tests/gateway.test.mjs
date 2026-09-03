@@ -67,6 +67,31 @@ test("production gateway routes non-API requests to the UI", async () => {
   }
 });
 
+test("production gateway routes the legacy CLI health contract to the API", async () => {
+  const seen = [];
+  const api = http.createServer((request, response) => {
+    seen.push(request.url);
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end('{"status":"ok","comfyui":"ok"}');
+  });
+  const web = http.createServer((_request, response) => response.end("web"));
+  const apiPort = await listen(api);
+  const webPort = await listen(web);
+  const gateway = createGateway({
+    apiOrigin: `http://127.0.0.1:${apiPort}`,
+    webOrigin: `http://127.0.0.1:${webPort}`,
+  });
+  const gatewayPort = await listen(gateway);
+  try {
+    const response = await fetch(`http://127.0.0.1:${gatewayPort}/health`);
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { status: "ok", comfyui: "ok" });
+    assert.deepEqual(seen, ["/health"]);
+  } finally {
+    await Promise.all([close(gateway), close(api), close(web)]);
+  }
+});
+
 test("production gateway accepts public-origin writes and rejects cross-origin writes", async () => {
   const seen = [];
   const api = http.createServer((request, response) => {

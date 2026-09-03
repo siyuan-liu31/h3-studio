@@ -102,7 +102,7 @@ H3 视频支持 16:9、9:16 和 24 FPS，时长使用真实的 `17k+5` 帧网格
   <img src="docs/assets/readme/long-video-editor.png" width="100%" alt="MiniMax H3 Video Studio 长视频编辑器示例：监视器、分镜时间线和已有素材片段">
 </p>
 
-每个待生成片段都可以选择独立生成、使用上一段尾帧续接，或把上一段视频作为 Ref2VA 参考。续接配置、画面比例、有效时长、采样档、LoRA 强度与 Seed 都会随项目保存。
+每个待生成片段都可以选择独立生成、使用上一段尾帧续接、把上一段视频作为 Ref2VA 参考，或通过 Motion Context 继承上一段的 H3 音视频 latent。续接配置、画面比例、有效时长、采样档、LoRA 强度、步数与 Seed 都会随项目保存。
 
 <p align="center">
   <img src="docs/assets/readme/long-video-continuation.png" width="100%" alt="长视频片段选择上一段视频进行续接生成的界面示例">
@@ -114,9 +114,11 @@ flowchart LR
   C -->|不续接| N[独立生成]
   C -->|上一段尾帧| F[尾帧作为 Picture 1]
   C -->|上一段视频| V[视频作为 Ref2VA 参考]
+  C -->|Motion Context| L[音视频 latent 与自动裁头]
   N --> S2[分段 2]
   F --> S2
   V --> S2
+  L --> S2
   S2 --> S3[后续分段]
   S1 --> Merge[按顺序合并]
   S2 --> Merge
@@ -125,8 +127,9 @@ flowchart LR
 
 - 单段支持约 5.17–15.08 秒，失败后可重跑，前序变化会使依赖的下游片段失效并重新计算。
 - 362 帧成片作为下一段视频参考时，只裁剪系统派生的 15 秒参考副本；最终合并仍使用完整成片。
+- Motion Context 同时支持 Base 与 Turbo LoRA Profile，保留 Profile 允许范围内的自定义步数，并在拼接前自动移除复用的片头帧；相邻 latent 续接片段必须保持相同输出尺寸。
 - 合并由 FFmpeg 做可审计的硬切拼接，不宣称自动实现无缝音画衔接。
-- 支持停止任务、按计划生成、合并长视频和下载成片。完整合同见 [长视频文档](docs/long-video.md)。
+- 可用 `h3ctl video compose` 跑完整流程，也可分别调用项目、裁剪和拼接原子命令。完整合同见 [长视频文档](docs/long-video.md) 与 [Motion Context 合成长视频](docs/motion-context-long-video.md)。
 
 ### 资产与结果管理
 
@@ -137,7 +140,11 @@ flowchart LR
 
 ### 面向 Agent 的 Go CLI
 
-`h3ctl` 把素材上传下载、生图生视频、任务等待与恢复、首尾帧提取、媒体派生和长视频项目拆成稳定的原子命令。它还提供基于 `yt-dlp` 的隔离本地 `douyin parse|download|serve` 工具与仅回环可访问的 Swagger API，不会打开 H3 SSH context。CLI 支持本地文件、远端资产 locator、机器地址可变的 SSH context，以及适合 Agent 解析的 JSON/JSONL 输出。构建、连接、Cookie 安全和完整命令说明见 [Go CLI 文档](docs/cli.md)。
+`h3ctl` 把素材上传下载、生图生视频、任务等待与恢复、首尾帧提取、媒体派生和长视频项目拆成稳定的原子命令。`h3ctl video compose` 还提供从版本锁定的项目 Spec 到最终成片下载的 Agent 友好端到端入口，同时保留每个项目操作的独立调用能力。它还提供基于 `yt-dlp` 的隔离本地 `douyin parse|download|serve` 工具与仅回环可访问的 Swagger API，不会打开 H3 SSH context。CLI 支持本地文件、远端资产 locator、机器地址可变的 SSH context，以及适合 Agent 解析的 JSON/JSONL 输出。构建、连接、Cookie 安全和完整命令说明见 [Go CLI 文档](docs/cli.md)。
+
+```bash
+h3ctl video compose --spec trilogy.json --to final.mp4 --timeout 0
+```
 
 > 品牌更名不影响兼容性：CLI 仍叫 `h3ctl`，现有 `H3_STUDIO_*` 环境变量、`h3-studio` 数据路径、API 合同和浏览器持久化键均保持不变。
 
@@ -158,7 +165,7 @@ flowchart LR
 
 在项目根目录执行：
 
-1. 复制配置，确认 ComfyUI URL、数据目录和模型文件名，并把示例 API Key 改成强随机值。
+1. 复制配置，确认 ComfyUI URL、数据目录和模型文件名。通过 loopback 或 SSH 隧道使用时无需 API Key；除非明确为公网部署启用鉴权，否则两个 Key 均保持为空。
 
    ```bash
    cp .env.example .env.local
@@ -239,9 +246,10 @@ ssh -N -L 16020:127.0.0.1:3013 -p <PORT> <SSH_USER>@<HOST>
 | `H3_STUDIO_DATA_ROOT` | 资产与任务元数据目录，远端建议放在数据盘 |
 | `H3_STUDIO_COMFY_INPUT` / `H3_STUDIO_COMFY_OUTPUT` | ComfyUI 输入与输出目录 |
 | `H3_STUDIO_*_MODEL` / `H3_STUDIO_*_LORA` | 模型 Profile 使用的文件名 |
-| `H3_STUDIO_API_KEY` / `H3_STUDIO_PROXY_API_KEY` | API 校验与同源代理使用的同一密钥 |
+| `H3_STUDIO_API_KEY` / `H3_STUDIO_PROXY_API_KEY` | 公网部署可选的同值密钥；loopback/SSH 使用时均留空 |
 | `H3_STUDIO_COMFY_IDLE_FREE_SECONDS` | ComfyUI 全局队列空闲后调用 `/free` 的秒数；`0` 表示禁用 |
 | `H3_STUDIO_MAX_ASSET_STORAGE_BYTES` | 资产存储上限 |
+| `H3_STUDIO_MAX_MOTION_CONTEXT_STORAGE_BYTES` | Motion Context 持久 latent 存储上限 |
 | `H3_STUDIO_MAX_ACTIVE_JOBS` | 活跃任务上限 |
 | `H3_STUDIO_MAX_PROJECT_JSON_BYTES` | 长视频项目定义上限，默认 32 MiB |
 | `H3_STUDIO_ASSET_TTL_DAYS` | 管理员手动垃圾回收使用的默认保留天数 |

@@ -9,6 +9,8 @@ from server.config import Config
 from server.errors import ApiError, CapabilityError
 from server.profiles import DEFAULT_REGISTRY, H3_MAX_DURATION_SECONDS
 from server.workflows import (
+    MotionContextPlan,
+    ResumeSamplingPlan,
     compile_prompt_request,
     compile_image_workflow,
     compile_z_image_img2img_workflow,
@@ -93,6 +95,69 @@ class FrameTests(unittest.TestCase):
         self.assertEqual(h3_frame_count(15), 362)
         self.assertEqual(h3_frame_count(H3_MAX_DURATION_SECONDS), 362)
         self.assertEqual(h3_frame_count(H3_MAX_DURATION_SECONDS) / 24, H3_MAX_DURATION_SECONDS)
+
+
+class MotionContextWorkflowTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.config = config(Path(self.temp.name))
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    def spec(self, profile_id: str = "minimax-h3-fl2va", steps: int = 7):
+        profile = DEFAULT_REGISTRY.get(profile_id)
+        return parse_generation_request({
+            "output_type": "video",
+            "prompt": "A continuous illustrated scene",
+            "profile_id": profile.id,
+            "profile_version": profile.version,
+            "profile_digest": profile.digest(),
+            "parameters": {"duration": 5, "aspect_ratio": "16:9", "steps": steps},
+            "references": [],
+        }, lookup)
+
+    def test_turbo_custom_steps_loads_context_trims_output_and_saves_raw_latent(self) -> None:
+        spec = self.spec(steps=7)
+        workflow = compile_workflow(spec, self.config, "a" * 32, motion_context_plan=MotionContextPlan(
+            checkpoint_input="h3-studio-motion-context/source.latent",
+            save_context=True,
+            video_frames=39,
+            audio_frames=48,
+        ))
+        self.assertEqual(workflow["12"]["inputs"]["steps"], 7)
+        self.assertEqual(workflow["22"]["inputs"]["context_length"], "39")
+        self.assertEqual(workflow["22"]["inputs"]["audio_context_length"], 48)
+        self.assertEqual(workflow["10"]["inputs"]["conditioning"], ["22", 0])
+        self.assertEqual(workflow["16"]["inputs"]["images"], ["23", 0])
+        self.assertEqual(workflow["16"]["inputs"]["audio"], ["23", 1])
+        self.assertEqual(workflow["19"]["inputs"]["samples"], ["13", 0])
+        evidence = workflow_evidence(workflow, spec, "a" * 32)
+        self.assertEqual(evidence["steps"], 7)
+        self.assertEqual(evidence["motion_context"]["video_frames"], 39)
+        self.assertTrue(evidence["motion_context"]["trimmed"])
+
+    def test_base_and_first_chain_link_are_supported_without_changing_normal_graphs(self) -> None:
+        base = self.spec("minimax-h3-fl2va-base", steps=20)
+        first = compile_workflow(base, self.config, "b" * 32, motion_context_plan=MotionContextPlan(save_context=True))
+        self.assertNotIn("4", first)
+        self.assertIn("19", first)
+        self.assertNotIn("22", first)
+        normal = compile_workflow(base, self.config, "c" * 32)
+        self.assertNotIn("19", normal)
+        self.assertNotIn("22", normal)
+        self.assertEqual(normal["16"]["inputs"]["images"], ["14", 0])
+
+    def test_motion_context_rejects_bad_windows_and_sampling_resume_collision(self) -> None:
+        with self.assertRaises(ValueError):
+            MotionContextPlan(video_frames=6)
+        with self.assertRaises(ValueError):
+            MotionContextPlan(audio_frames=241)
+        with self.assertRaises(ValueError):
+            compile_workflow(
+                self.spec("minimax-h3-fl2va-base", 20), self.config, "d" * 32,
+                ResumeSamplingPlan("initial", 50), MotionContextPlan(save_context=True),
+            )
 
 
 class RequestTests(unittest.TestCase):

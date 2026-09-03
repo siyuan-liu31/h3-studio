@@ -46,6 +46,9 @@ class FakeComfy:
     def ensure_capability(self, *_args):
         return None
 
+    def ensure_motion_context(self, *_args):
+        return None
+
     def submit(self, workflow, _client_id):
         self.submit_count += 1
         self.workflows.append(workflow)
@@ -56,6 +59,12 @@ class FakeComfy:
         self.records[prompt_id] = {
             "outputs": {"20": {"videos": [{"filename": output.name, "subfolder": "", "type": "output"}]}},
         }
+        if "19" in workflow:
+            latent = self.output_root / f"clip-{self.submit_count}.latent"
+            latent.write_bytes(f"latent-{prompt_id}".encode())
+            self.records[prompt_id]["outputs"]["19"] = {
+                "latents": [{"filename": latent.name, "subfolder": "", "type": "output"}],
+            }
         return prompt_id
 
     def status(self, prompt_id):
@@ -187,6 +196,115 @@ class VideoProjectTests(unittest.TestCase):
                 ],
             })
         self.assertEqual(raised.exception.code, "continuation_from_media")
+
+    def test_motion_context_three_segment_turbo_chain_uses_latents_trim_and_custom_settings(self) -> None:
+        requests = [self.request() for _ in range(3)]
+        for request in requests:
+            request["parameters"]["steps"] = 4
+        created = self.manager.create({
+            "title": "Three panel continuity",
+            "segments": [
+                {"continuation": "none", "request": requests[0]},
+                {"continuation": "motion_context", "motion_context": {"video_frames": 5, "audio_frames": 24}, "request": requests[1]},
+                {"continuation": "motion_context", "motion_context": {"video_frames": 22, "audio_frames": 48}, "request": requests[2]},
+            ],
+        })
+        self.manager.run(created["id"])
+        wait_until(lambda: self.manager.get(created["id"])["status"] in {"completed", "failed"})
+        receipt = self.manager.get(created["id"])
+        self.assertEqual(receipt["status"], "completed", receipt)
+        self.assertEqual(len(self.comfy.workflows), 3)
+        self.assertIn("19", self.comfy.workflows[0])
+        self.assertNotIn("22", self.comfy.workflows[0])
+        self.assertEqual(self.comfy.workflows[1]["22"]["inputs"]["context_length"], "5")
+        self.assertEqual(self.comfy.workflows[2]["22"]["inputs"]["context_length"], "22")
+        self.assertEqual(self.comfy.workflows[2]["22"]["inputs"]["audio_context_length"], 48)
+        self.assertEqual(self.comfy.workflows[1]["16"]["inputs"]["images"], ["23", 0])
+        self.assertEqual([workflow["12"]["inputs"]["steps"] for workflow in self.comfy.workflows], [4, 4, 4])
+        self.assertTrue(receipt["segments"][0]["attempts"][-1]["motion_context_state"]["available"])
+        self.assertTrue(receipt["segments"][1]["attempts"][-1]["motion_context_state"]["available"])
+
+    def test_motion_context_save_failure_keeps_primary_video_and_blocks_only_next_link(self) -> None:
+        created = self.manager.create({
+            "title": "Primary output survives context failure",
+            "segments": [
+                {"continuation": "none", "request": self.request()},
+                {"continuation": "motion_context", "request": self.request()},
+            ],
+        })
+        with patch.object(
+            self.manager.motion_contexts,
+            "capture",
+            side_effect=ApiError(507, "motion_context_storage_full", "context quota is full"),
+        ):
+            self.manager.run(created["id"])
+            wait_until(lambda: self.manager.get(created["id"])["status"] in {"completed", "failed"})
+        receipt = self.manager.get(created["id"])
+        first = receipt["segments"][0]
+        second = receipt["segments"][1]
+        self.assertEqual(first["status"], "completed")
+        self.assertFalse(first["attempts"][-1]["motion_context_state"]["available"])
+        self.assertEqual(second["status"], "failed")
+        self.assertIn("no usable Motion Context latent", second["error"])
+        source_job = self.jobs.get(first["job_id"])
+        self.assertEqual(source_job["status"], "completed")
+        self.assertTrue(source_job["outputs"])
+        self.assertTrue((self.settings.comfy_output / source_job["outputs"][0]["filename"]).is_file())
+
+    def test_motion_context_validation_rejects_bad_windows_first_frame_and_resolution_drift(self) -> None:
+        with self.assertRaises(ApiError) as bad_window:
+            self.manager.create({
+                "title": "bad",
+                "segments": [
+                    {"continuation": "none", "request": self.request()},
+                    {"continuation": "motion_context", "motion_context": {"video_frames": 6}, "request": self.request()},
+                ],
+            })
+        self.assertEqual(bad_window.exception.code, "invalid_motion_context")
+
+        image_id = "9" * 32
+        self.add_asset(image_id, "image")
+        conflicted = self.request()
+        conflicted["references"] = [{"asset_id": image_id, "role": "first_frame"}]
+        with self.assertRaises(ApiError) as first_frame:
+            self.manager.create({
+                "title": "conflict",
+                "segments": [
+                    {"continuation": "none", "request": self.request()},
+                    {"continuation": "motion_context", "request": conflicted},
+                ],
+            })
+        self.assertEqual(first_frame.exception.code, "motion_context_first_frame_conflict")
+
+        portrait = self.request()
+        portrait["parameters"]["aspect_ratio"] = "9:16"
+        created = self.manager.create({
+            "title": "dimensions",
+            "segments": [
+                {"continuation": "none", "request": self.request()},
+                {"continuation": "motion_context", "request": portrait},
+            ],
+        })
+        self.manager.run(created["id"])
+        wait_until(lambda: self.manager.get(created["id"])["status"] in {"completed", "failed"})
+        failed = self.manager.get(created["id"])
+        self.assertEqual(failed["status"], "failed")
+        self.assertIn("matching adjacent resolutions", failed["segments"][1]["error"])
+
+    def test_terminal_coordinator_failure_cleans_staged_motion_context(self) -> None:
+        job_id = "e" * 32
+        staged = self.manager.motion_contexts.input_root / f"{job_id}-{'f' * 32}.latent"
+        staged.write_bytes(b"staged")
+        self.jobs.put(job_id, {
+            "id": job_id,
+            "status": "failed",
+            "motion_context_staged_file": staged.name,
+        })
+        value = self.manager._poll_job(job_id)
+        self.assertEqual(value["status"], "failed")
+        self.assertNotIn("motion_context_staged_file", value)
+        self.assertFalse(staged.exists())
+        self.assertNotIn("motion_context_staged_file", self.jobs.get(job_id))
 
     def test_practical_limit_allows_65_but_rejects_1001_without_duration_cap(self) -> None:
         body = {"title": "Many clips", "segments": [{"continuation": "none", "request": self.request()}] * 65}

@@ -102,7 +102,7 @@ H3 動画は 16:9、9:16、24 FPS に対応します。長さは実際の `17k+5
   <img src="docs/assets/readme/long-video-editor.png" width="100%" alt="モニター、絵コンテタイムライン、既存素材セグメントを備えた MiniMax H3 Video Studio 長尺動画エディター">
 </p>
 
-各生成待ちセグメントは、独立生成、前セグメントの最終フレームからの継続、または前セグメントの動画を Ref2VA 参照として使う方法を選べます。継続設定、アスペクト比、有効時間、サンプリング Profile、LoRA 強度、Seed はプロジェクトとともに保存されます。
+各生成待ちセグメントは、独立生成、前セグメントの最終フレームからの継続、前セグメントの動画を Ref2VA 参照として使う方法、または Motion Context で前セグメントの H3 映像／音声 latent を引き継ぐ方法を選べます。継続設定、アスペクト比、有効時間、サンプリング Profile、LoRA 強度、ステップ数、Seed はプロジェクトとともに保存されます。
 
 <p align="center">
   <img src="docs/assets/readme/long-video-continuation.png" width="100%" alt="前セグメントの動画から継続生成する長尺動画セグメントの設定画面">
@@ -114,9 +114,11 @@ flowchart LR
   C -->|継続なし| N[独立生成]
   C -->|前セグメントの最終フレーム| F[最終フレームを Picture 1 に指定]
   C -->|前セグメントの動画| V[動画を Ref2VA 参照に指定]
+  C -->|Motion Context| L[映像と音声の latent および自動先頭トリム]
   N --> S2[セグメント 2]
   F --> S2
   V --> S2
+  L --> S2
   S2 --> S3[後続セグメント]
   S1 --> Merge[順番に結合]
   S2 --> Merge
@@ -125,8 +127,9 @@ flowchart LR
 
 - 各セグメントは約 5.17～15.08 秒に対応します。失敗したセグメントは再実行でき、上流の変更時には依存する下流セグメントを無効化して再計算できます。
 - 完成した 362 フレームのセグメントを次の動画参照に使う場合、システムが派生させた 15 秒の参照コピーだけを切り詰めます。最終結合では完全なセグメントを使用します。
+- Motion Context は Base と Turbo LoRA の両 Profile に対応し、Profile の許容範囲内で指定したステップ数を維持し、結合前に再利用された先頭フレームを自動で除去します。latent で接続する隣接セグメントは同じ出力サイズである必要があります。
 - 結合には FFmpeg による監査可能なハードカットを使用します。自動で継ぎ目のない映像／音声接続を実現するとは表明しません。
-- タスク停止、計画に沿った生成、長尺動画の結合、完成動画のダウンロードに対応します。完全な仕様は [長尺動画文書](docs/long-video.md) を参照してください。
+- `h3ctl video compose` でパイプライン全体を実行でき、プロジェクト、トリム、結合の各原子コマンドも個別に利用できます。完全な仕様は [長尺動画文書](docs/long-video.md) と [Motion Context 動画合成](docs/motion-context-long-video.md) を参照してください。
 
 ### アセット／結果管理
 
@@ -137,7 +140,11 @@ flowchart LR
 
 ### Agent 自動化向け Go CLI
 
-`h3ctl` は、アセットのアップロード／ダウンロード、画像・動画生成、再開可能なタスク待機、先頭・末尾フレーム抽出、メディア派生、長尺動画プロジェクトを安定した原子コマンドとして提供します。さらに、`yt-dlp` ベースの分離されたローカル `douyin parse|download|serve` ツールと、ループバックのみで利用できる Swagger API を含みます。このツールは H3 SSH context を開きません。CLI はローカルファイル、リモートアセット locator、レンタルマシンのアドレス変更に対応する SSH context、Agent 向け JSON/JSONL 出力を利用できます。ビルド、接続、Cookie の安全性、全コマンドは [Go CLI ガイド](docs/cli.md) を参照してください。
+`h3ctl` は、アセットのアップロード／ダウンロード、画像・動画生成、再開可能なタスク待機、先頭・末尾フレーム抽出、メディア派生、長尺動画プロジェクトを安定した原子コマンドとして提供します。`h3ctl video compose` は、バージョン固定されたプロジェクト Spec から完成動画のダウンロードまでを Agent 向けに一括実行しつつ、すべてのプロジェクト操作を個別にも呼び出せます。さらに、`yt-dlp` ベースの分離されたローカル `douyin parse|download|serve` ツールと、ループバックのみで利用できる Swagger API を含みます。このツールは H3 SSH context を開きません。CLI はローカルファイル、リモートアセット locator、レンタルマシンのアドレス変更に対応する SSH context、Agent 向け JSON/JSONL 出力を利用できます。ビルド、接続、Cookie の安全性、全コマンドは [Go CLI ガイド](docs/cli.md) を参照してください。
+
+```bash
+h3ctl video compose --spec trilogy.json --to final.mp4 --timeout 0
+```
 
 リポジトリには、ローカル H3 プロンプトコンパイラー skill が 1 つだけ付属しています。入口は [`skills/h3-ref2va-prompt-compiler`](skills/h3-ref2va-prompt-compiler/SKILL.md) です。
 
@@ -156,7 +163,7 @@ flowchart LR
 
 プロジェクトルートで実行します：
 
-1. 設定をコピーし、ComfyUI URL、データディレクトリ、モデルファイル名を確認して、サンプル API Key を強力なランダム値へ変更します。
+1. 設定をコピーし、ComfyUI URL、データディレクトリ、モデルファイル名を確認します。loopback または SSH トンネルで使う場合、API Key は不要です。公開配置で認証を明示的に有効化しない限り、両方の Key は空のままにします。
 
    ```bash
    cp .env.example .env.local
@@ -237,9 +244,10 @@ ssh -N -L 16020:127.0.0.1:3013 -p <PORT> <SSH_USER>@<HOST>
 | `H3_STUDIO_DATA_ROOT` | アセット／タスクメタデータのディレクトリ。リモート環境ではデータボリュームを推奨 |
 | `H3_STUDIO_COMFY_INPUT` / `H3_STUDIO_COMFY_OUTPUT` | ComfyUI の入力／出力ディレクトリ |
 | `H3_STUDIO_*_MODEL` / `H3_STUDIO_*_LORA` | モデル Profile が使用するファイル名 |
-| `H3_STUDIO_API_KEY` / `H3_STUDIO_PROXY_API_KEY` | API 検証と同一オリジンプロキシに使用する同一のキー |
+| `H3_STUDIO_API_KEY` / `H3_STUDIO_PROXY_API_KEY` | 公開配置で任意に使う同一値のキー。loopback／SSH 利用時は両方とも空欄 |
 | `H3_STUDIO_COMFY_IDLE_FREE_SECONDS` | ComfyUI のグローバルキューがアイドルになってから `/free` を呼ぶまでの秒数。`0` で無効化 |
 | `H3_STUDIO_MAX_ASSET_STORAGE_BYTES` | アセットストレージ上限 |
+| `H3_STUDIO_MAX_MOTION_CONTEXT_STORAGE_BYTES` | Motion Context latent 永続ストレージ上限 |
 | `H3_STUDIO_MAX_ACTIVE_JOBS` | アクティブタスク上限 |
 | `H3_STUDIO_MAX_PROJECT_JSON_BYTES` | 長尺動画プロジェクト定義の上限。既定値は 32 MiB |
 | `H3_STUDIO_ASSET_TTL_DAYS` | 管理者が手動でガベージコレクションを実行する際の既定保持日数 |

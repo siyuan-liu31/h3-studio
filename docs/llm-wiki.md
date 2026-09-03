@@ -1,6 +1,6 @@
 # MiniMax H3 Video Studio LLM Wiki
 
-> 最后更新：2026-09-02（Asia/Shanghai）。面向后续开发 Agent 的代码地图；具体发布版本以 Git 和开发机 `current` 软链接为准。实现事实优先级：源码与测试 > capability/API 回执 > 本文 > 历史 evidence 文档。
+> 最后更新：2026-09-03（Asia/Shanghai）。面向后续开发 Agent 的代码地图；具体发布版本以 Git 和开发机 `current` 软链接为准。实现事实优先级：源码与测试 > capability/API 回执 > 本文 > 历史 evidence 文档。
 
 ## 1. 先看这里
 
@@ -71,6 +71,7 @@ server/
   media_tasks.py               H3 参考预处理后台任务、进度、取消与重启回执
   h3_reference.py              H3 参考尺寸、Token 估算与 sm120/Sage 安全策略
   checkpoints.py               最新 checkpoint、TTL/GC、续采身份校验与 staging
+  motion_context.py            长视频 Motion Context latent 原子存储、完整性校验与回收
   video_projects.py            长视频项目执行器、续接、停止、合并、恢复
   prompting.py                 H3 Prompt 标签替换及 FL/Ref 模板编译
   security.py                  ID、文件名、路径与媒体签名安全边界
@@ -334,10 +335,13 @@ $H3_STUDIO_DATA_ROOT/
 - 项目 CRUD、选段顺序运行、单段重跑与停止
 - `tail_frame`：抽取上一段真实尾帧，作为下一段端点图
 - `previous_video`：创建不超过 15 秒的派生视频参考
+- `motion_context`：使用锁定的外部 Motion Context 节点复用上一段视频/音频 latent，对新段自动裁头，且不占用像素参考槽
 - 失败/停止恢复、下游失效、派生资产回收
 - ffmpeg concat 合并、进度、取消和产物证据
 
 续接与合并使用的是不同资产：续接可以裁剪系统派生副本，最终合并必须使用每段完整输出。
+
+Motion Context 依赖不入库的 GPL-3.0 外部节点 `ComfyUI-H3-Motion-Context`，当前锁定 v0.5.1 / `429e952ae5c09b54f44cb6e3bef7331d998f0656`，需 ComfyUI >= 0.34.0。`server/comfy.py` 根据节点及其输入 schema 动态暴露 `video.motion_context`。链上相邻生成段必须保持相同尺寸；Turbo/Base 的 Profile 、步数、精度和显存调度仍走原有合同。`server/motion_context.py` 使用独立配额、原子复制和 SHA-256 保存链状态；MP4 是主产物，latent 保存失败只阻断下一个依赖段。
 
 ## 8. API 地图
 
@@ -366,6 +370,7 @@ API 路由集中在 `server/app.py::Handler`：
 - 生成使用“提交 `job_id` + 短请求轮询”；CLI 断开不取消服务端任务，`Ctrl-C` 默认只停止本地等待。
 - `voice convert` 用两个音频 locator 提交持久换声任务，默认等待，`--detach` 只返回 task ID；`voice.*` 和 `gpu.status` 也是 Agent 原子 operation。
 - `media prepare-reference` 与 `media.prepare_reference` 共用服务端派生；本地输入先上传，CLI 本机不需要 ffmpeg。`job resume` 与 `job.resume` 只提交任务 ID、追加步数和幂等 request ID，可继续等待/下载。
+- `video compose` / `video.compose` 是端到端长视频入口：自动补齐 Profile 版本与摘要，再组合项目创建、顺序生成、Motion Context 裁头、合并等待和原子下载。`video trim` 复用 `media trim`，`video concat` 复用 `project merge`，底层原子 operation 仍可独立调用。
 - `--control-timeout` 是控制面 HTTP 超时；transfer/media 超时独立且默认无限。`job wait --timeout` 是总等待超时。
 - 显式 Profile 先读 `/api/capabilities`，自动附加 `profile_version` 和 `manifest_sha256` 作为 `profile_digest`。
 - JSON stdout 使用 `h3ctl.output/v1` 信封，进度/日志写 stderr；JSONL 生成等待先输出 `submitted` 再输出状态事件。提交断连用同一 request ID 和 payload 恢复。

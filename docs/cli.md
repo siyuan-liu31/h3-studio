@@ -176,6 +176,38 @@ h3ctl job wait job:ID --timeout 0 --output jsonl
 h3ctl job download job:ID --to ./sunrise.mp4
 ```
 
+## End-to-end long-video composition
+
+`video compose` is the high-level CLI entry point. It keeps the existing
+project lifecycle atomic and reusable while providing a single command for
+create, ordered generation, Motion Context head trim, validated concat, and
+final atomic download:
+
+```bash
+h3ctl video compose --spec ./trilogy.json --to ./final.mp4 --timeout 0
+```
+
+The input is the same object accepted by `POST /api/video-projects`. Explicit
+Profile IDs may omit `profile_version` and `profile_digest`; `video compose`
+pins both from current capabilities before project creation. Agent callers can
+invoke the same path as operation `video.compose`.
+
+The atomic aliases remain available:
+
+```bash
+h3ctl video trim asset:ID --start 1 --end 5
+h3ctl video concat PROJECT_ID
+h3ctl project wait PROJECT_ID --timeout 0
+h3ctl project download PROJECT_ID --to ./final.mp4
+```
+
+Turbo4 step counts remain user-configurable within Profile limits. A later
+segment selects latent continuation with `continuation: "motion_context"` and
+optional `motion_context.video_frames` / `audio_frames`. See
+[Motion Context long-video composition](motion-context-long-video.md) for the
+full contract, pinned external node version, recovery, storage, and dimension
+rules.
+
 ## Voice conversion
 
 The voice commands are CLI/Agent-only in this release. Local inputs are first

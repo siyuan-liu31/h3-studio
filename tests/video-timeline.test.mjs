@@ -180,7 +180,7 @@ test("polling transition from merging to completed refreshes Results exactly onc
 
 test("continuation is exactly one enum choice and first segment cannot depend on a predecessor", () => {
   assert.deepEqual(continuationChoices(0), ["none"]);
-  assert.deepEqual(continuationChoices(1), ["none", "tail_frame", "previous_video"]);
+  assert.deepEqual(continuationChoices(1), ["none", "tail_frame", "previous_video", "motion_context"]);
   assert.equal(continuationSourceReady([segment("s1"), segment("s2")], 1), true);
   assert.equal(continuationSourceReady([segment("s1"), segment("s2", { continuation: "tail_frame" })], 1), false);
   assert.equal(continuationSourceReady([segment("s1", { status: "completed" }), segment("s2", { continuation: "tail_frame" })], 1), true);
@@ -201,6 +201,35 @@ test("continuation is exactly one enum choice and first segment cannot depend on
     request: { ...segment("s2").request, references: [{ asset_id: "b".repeat(32), role: "identity" }] },
   })] });
   assert.match(validateVideoProject(mixedTail).join("\n"), /last_frame image reference/i);
+});
+
+test("Motion Context settings round-trip and enforce lossless-chain invariants", () => {
+  const continued = segment("s2", {
+    continuation: "motion_context",
+    motion_context: { video_frames: 39, audio_frames: 48 },
+  });
+  const value = project({ segments: [segment("s1"), continued] });
+  assert.deepEqual(serializeVideoProject(value).segments[1].motion_context, {
+    video_frames: 39,
+    audio_frames: 48,
+  });
+  assert.equal(validateVideoProject(value).length, 0);
+  assert.equal(timelineWorkflowModeLabel(continued), "潜空间动作与声音续接 · Motion Context");
+
+  const invalid = project({ segments: [segment("s1"), {
+    ...continued,
+    motion_context: { video_frames: 6, audio_frames: 241 },
+    request: {
+      ...continued.request,
+      parameters: { ...continued.request.parameters, aspect_ratio: "9:16" },
+      references: [{ asset_id: "b".repeat(32), role: "first_frame" }],
+    },
+  }] });
+  const errors = validateVideoProject(invalid).join("\n");
+  assert.match(errors, /video frames must be 5, 22, 39, or 56/i);
+  assert.match(errors, /audio frames must be an integer in 0\.\.240/i);
+  assert.match(errors, /cannot be combined with a first-frame reference/i);
+  assert.match(errors, /must keep the previous aspect ratio/i);
 });
 
 test("selected execution plan visibly auto-includes every unfinished continuation predecessor", () => {
@@ -371,6 +400,7 @@ test("long-video workflow mode and sampling are separate trusted profile dimensi
   assert.equal(timelineRequiredCompiler(base), "h3_fl");
   assert.equal(timelineWorkflowModeLabel(base), "独立生成 · T2V");
   assert.equal(timelineWorkflowModeLabel({ ...base, continuation: "tail_frame" }), "尾帧约束 · FL2V");
+  assert.equal(timelineWorkflowModeLabel({ ...base, continuation: "motion_context" }), "潜空间动作与声音续接 · Motion Context");
   const continued = { ...base, continuation: "previous_video" };
   const ref = retargetSegmentSampling(continued, [flTurbo, flBase, refBase], "base");
   assert.equal(ref.request.profile_id, "ref-base");

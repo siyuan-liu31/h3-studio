@@ -3,6 +3,7 @@ package operation
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -25,6 +26,96 @@ const (
 	serviceMediaID = "cccccccccccccccccccccccccccccccc"
 	serviceReqID   = "dddddddddddddddddddddddddddddddd"
 )
+
+func TestComposeVideoPinsProfilesRunsMergesAndAtomicallyDownloads(t *testing.T) {
+	destination := filepath.Join(t.TempDir(), "final.mp4")
+	var received map[string]any
+	var mergeStarted atomic.Bool
+	events := []map[string]any{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/capabilities":
+			_ = json.NewEncoder(w).Encode(map[string]any{"profiles": []any{map[string]any{
+				"id": "minimax-h3-fl2va", "version": "3", "manifest_sha256": strings.Repeat("e", 64), "available": true,
+			}}})
+		case r.Method == http.MethodPost && r.URL.Path == "/api/video-projects":
+			_ = json.NewDecoder(r.Body).Decode(&received)
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": serviceReqID})
+		case r.Method == http.MethodPost && r.URL.Path == "/api/video-projects/"+serviceReqID+"/run":
+			w.WriteHeader(http.StatusAccepted)
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": serviceReqID, "status": "running"})
+		case r.Method == http.MethodPost && r.URL.Path == "/api/video-projects/"+serviceReqID+"/merge":
+			mergeStarted.Store(true)
+			w.WriteHeader(http.StatusAccepted)
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": serviceReqID, "status": "merging"})
+		case r.Method == http.MethodGet && r.URL.Path == "/api/video-projects/"+serviceReqID:
+			status := "completed"
+			if mergeStarted.Load() {
+				status = "merged"
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": serviceReqID, "status": status})
+		case r.Method == http.MethodGet && r.URL.Path == "/api/video-projects/"+serviceReqID+"/merged/download":
+			_, _ = io.WriteString(w, "final-video")
+		default:
+			t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	spec := map[string]any{"title": "trilogy", "segments": []any{map[string]any{
+		"continuation": "none",
+		"request":      map[string]any{"profile_id": "minimax-h3-fl2va", "prompt": "shot one"},
+	}}}
+	result, err := serviceFor(server).ComposeVideo(context.Background(), spec, destination, false, WaitOptions{
+		Timeout: time.Second, PollInterval: time.Millisecond,
+		OnEvent: func(event map[string]any) { events = append(events, event) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := received["segments"].([]any)[0].(map[string]any)["request"].(map[string]any)
+	if request["profile_version"] != "3" || request["profile_digest"] != strings.Repeat("e", 64) {
+		t.Fatalf("profile was not pinned: %#v", request)
+	}
+	if spec["segments"].([]any)[0].(map[string]any)["request"].(map[string]any)["profile_version"] != nil {
+		t.Fatal("input spec was mutated")
+	}
+	content, readErr := os.ReadFile(destination)
+	if readErr != nil || string(content) != "final-video" {
+		t.Fatalf("download=%q err=%v", content, readErr)
+	}
+	if result["project_id"] != serviceReqID || len(events) < 3 || events[0]["type"] != "project_created" {
+		t.Fatalf("result=%#v events=%#v", result, events)
+	}
+}
+
+func TestComposeVideoFailsBeforeMutationForUnavailableProfile(t *testing.T) {
+	var mutatingCalls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/api/capabilities" {
+			mutatingCalls.Add(1)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"profiles": []any{map[string]any{
+			"id": "minimax-h3-fl2va", "available": false,
+		}}})
+	}))
+	defer server.Close()
+	_, err := serviceFor(server).ComposeVideo(context.Background(), map[string]any{
+		"segments": []any{map[string]any{"request": map[string]any{"profile_id": "minimax-h3-fl2va"}}},
+	}, filepath.Join(t.TempDir(), "never.mp4"), false, WaitOptions{})
+	var typed *contract.CLIError
+	if !errors.As(err, &typed) || typed.Code != "video_compose_failed" {
+		t.Fatalf("unexpected error: %#v", err)
+	}
+	details, _ := typed.Details.(map[string]any)
+	if details["phase"] != "profile" {
+		t.Fatalf("unexpected error: %#v", err)
+	}
+	if mutatingCalls.Load() != 0 {
+		t.Fatalf("profile rejection performed %d mutating requests", mutatingCalls.Load())
+	}
+}
 
 func serviceFor(server *httptest.Server) *Service {
 	return &Service{API: api.New(server.URL, time.Second), Context: "test", PollInterval: time.Millisecond}

@@ -230,6 +230,10 @@ func buildDefinitions() map[string]Definition {
 	add("project.rerun", []string{"project_id", "segment_id"}, map[string]any{"project_id": idRule, "segment_id": idRule})
 	add("project.merge", []string{"project_id"}, projectID)
 	add("project.download", []string{"project_id", "to"}, map[string]any{"project_id": idRule, "to": stringRule, "force": boolRule})
+	add("video.compose", []string{"spec", "to"}, map[string]any{
+		"spec": map[string]any{"type": "object"}, "to": stringRule, "force": boolRule,
+		"timeout_seconds": numberRule(0), "poll_seconds": numberRule(0),
+	})
 	return defs
 }
 

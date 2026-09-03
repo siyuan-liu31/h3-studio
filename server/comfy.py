@@ -429,6 +429,40 @@ class ComfyClient:
         fl_available = any(p["available"] for p in profile_values if p["compiler"] == "h3_fl")
         ref_available = any(p["available"] for p in profile_values if p["compiler"] == "h3_ref")
         image_profiles = [profile for profile in profile_values if profile["output_type"] == "image"]
+        motion_required_inputs = {
+            "MiniMaxH3MotionContext": {
+                "conditioning", "vae", "latent", "context_length",
+                "audio_context_length", "context_latent",
+            },
+            "MiniMaxH3MotionContextTrim": {
+                "images", "trim_frames", "audio", "fps", "match_tail",
+            },
+            "H3StudioSaveLatent": {"samples", "video_done", "filename_prefix"},
+            "H3StudioLoadLatent": {"latent"},
+        }
+        motion_missing_nodes = sorted(set(motion_required_inputs) - info.keys())
+        motion_missing_inputs = sorted(
+            f"{node}.inputs={','.join(missing)}"
+            for node, expected in motion_required_inputs.items()
+            if node in info
+            for missing in [sorted(expected - self._input_names(info, node))]
+            if missing
+        )
+        motion_context = {
+            "available": not motion_missing_nodes and not motion_missing_inputs,
+            "missing_nodes": motion_missing_nodes,
+            "missing_inputs": motion_missing_inputs,
+            "video_frames": [5, 22, 39, 56],
+            "audio_frames": {"min": 0, "max": 240, "default": 24},
+            "defaults": {"video_frames": 22, "audio_frames": 24, "match_tail": True},
+            "sampling_modes": ["turbo4", "base"],
+            "upstream": {
+                "repository": "https://github.com/NikoDemon80/ComfyUI-H3-Motion-Context",
+                "tag": "v0.5.1",
+                "commit": "429e952ae5c09b54f44cb6e3bef7331d998f0656",
+                "license": "GPL-3.0",
+            },
+        }
         return {
             "profiles": profile_values,
             "video": {
@@ -457,6 +491,7 @@ class ComfyClient:
                 },
                 "duration_seconds": {"min": 5, "max": H3_MAX_DURATION_SECONDS},
                 "max_references": 6,
+                "motion_context": motion_context,
             },
             "image": {
                 "available": any(profile["available"] for profile in image_profiles),
@@ -490,6 +525,19 @@ class ComfyClient:
             raise CapabilityError(f"selected workflow profile is unavailable; missing {missing}", details=selected)
         if spec.output_type == "image":
             return
+
+    def ensure_motion_context(self, config: Config, registry: ProfileRegistry = DEFAULT_REGISTRY) -> None:
+        capability = self.capabilities(config, registry)["video"]["motion_context"]
+        if capability.get("available") is True:
+            return
+        missing = ", ".join(
+            list(capability.get("missing_nodes", []))
+            + list(capability.get("missing_inputs", []))
+        )
+        raise CapabilityError(
+            f"Motion Context is unavailable; missing {missing}",
+            details=capability,
+        )
 
     def submit(self, workflow: dict[str, Any], client_id: str) -> str:
         resource_key = self._h3_resource_key(workflow)

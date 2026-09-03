@@ -59,6 +59,23 @@ def full_object_info():
     return info
 
 
+def motion_context_object_info():
+    info = full_object_info()
+    info["MiniMaxH3MotionContext"] = {"input": {
+        "required": {name: ["ANY"] for name in ("conditioning", "vae", "latent", "context_length", "audio_context_length")},
+        "optional": {"context_latent": ["LATENT"]},
+    }}
+    info["MiniMaxH3MotionContextTrim"] = {"input": {
+        "required": {name: ["ANY"] for name in ("images", "trim_frames")},
+        "optional": {name: ["ANY"] for name in ("audio", "fps", "match_tail")},
+    }}
+    info["H3StudioSaveLatent"] = {"input": {"required": {
+        name: ["ANY"] for name in ("samples", "video_done", "filename_prefix")
+    }}}
+    info["H3StudioLoadLatent"] = {"input": {"required": {"latent": ["ANY"]}}}
+    return info
+
+
 def quality_image_object_info():
     info = full_object_info()
     info.update({name: {} for name in {
@@ -292,6 +309,27 @@ class CapabilityTests(unittest.TestCase):
             by_id = {profile["id"]: profile for profile in value["profiles"]}
             self.assertTrue(by_id["anything-v5-t2i"]["available"])
             self.assertFalse(by_id["anything-v5-img2img"]["available"])
+
+    def test_motion_context_capability_requires_pinned_node_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            settings = config(Path(directory))
+            client = ComfyClient("http://unused")
+            with patch.object(client, "object_info", return_value=motion_context_object_info()):
+                capability = client.capabilities(settings)["video"]["motion_context"]
+                client.ensure_motion_context(settings)
+            self.assertTrue(capability["available"])
+            self.assertEqual(capability["video_frames"], [5, 22, 39, 56])
+            self.assertEqual(capability["upstream"]["tag"], "v0.5.1")
+            self.assertEqual(
+                capability["upstream"]["commit"],
+                "429e952ae5c09b54f44cb6e3bef7331d998f0656",
+            )
+
+            broken = motion_context_object_info()
+            broken["MiniMaxH3MotionContext"]["input"]["optional"].pop("context_latent")
+            with patch.object(client, "object_info", return_value=broken):
+                with self.assertRaisesRegex(CapabilityError, "context_latent"):
+                    client.ensure_motion_context(settings)
 
     def test_missing_checkpoint_has_clear_capability_error(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

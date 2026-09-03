@@ -1,4 +1,4 @@
-export type ContinuationMode = "none" | "tail_frame" | "previous_video";
+export type ContinuationMode = "none" | "tail_frame" | "previous_video" | "motion_context";
 export type TimelineStatus = "draft" | "pending" | "submitting" | "queued" | "running" | "partial" | "stopping" | "stopped" | "canceled" | "stale" | "completed" | "failed" | "merging";
 
 export type TimelineParts = Record<string, string>;
@@ -38,6 +38,10 @@ export type VideoContinuationRange = {
   end_frame: number;
   fps: number;
 };
+export type VideoMotionContext = {
+  video_frames: 5 | 22 | 39 | 56;
+  audio_frames: number;
+};
 export type VideoMediaSource = {
   type: "asset" | "job";
   asset_id?: string;
@@ -70,6 +74,7 @@ export type VideoSegment = {
   media_source?: VideoMediaSource;
   source_range?: VideoSourceRange;
   continuation_range?: VideoContinuationRange;
+  motion_context?: VideoMotionContext;
   job_id?: string;
   attempts: VideoAttempt[];
   preview_url?: string;
@@ -157,6 +162,7 @@ export type SerializedVideoProject = {
     continuation: ContinuationMode;
     source_range?: VideoSourceRange;
     continuation_range?: VideoContinuationRange;
+    motion_context?: VideoMotionContext;
     request: VideoSegmentRequest;
   } | {
     id?: string;
@@ -166,7 +172,7 @@ export type SerializedVideoProject = {
 };
 
 const ACTIVE_STATUSES = new Set(["submitting", "queued", "running", "stopping", "merging"]);
-const CONTINUATIONS = new Set<ContinuationMode>(["none", "tail_frame", "previous_video"]);
+const CONTINUATIONS = new Set<ContinuationMode>(["none", "tail_frame", "previous_video", "motion_context"]);
 const ASSET_ID = /^[0-9a-f]{32}$/;
 
 export const H3_GENERATION_FPS = 24;
@@ -388,6 +394,7 @@ export function timelineWorkflowModeLabel(segment: VideoSegment): string {
   if (isVideoMediaSegment(segment)) return "直接素材 · 不生成";
   if (segment.continuation === "tail_frame") return "尾帧约束 · FL2V";
   if (segment.continuation === "previous_video") return "上一段视频参考 · Ref2VA";
+  if (segment.continuation === "motion_context") return "潜空间动作与声音续接 · Motion Context";
   if (segment.source_range) return "源视频参考 · Ref2VA";
   if (segment.request.references.length > 0) return "多模态参考 · Ref2VA";
   return "独立生成 · T2V";
@@ -499,7 +506,7 @@ export function timelinePromptPreview(
 }
 
 export function continuationChoices(index: number): ContinuationMode[] {
-  return index <= 0 ? ["none"] : ["none", "tail_frame", "previous_video"];
+  return index <= 0 ? ["none"] : ["none", "tail_frame", "previous_video", "motion_context"];
 }
 
 export function draftVideoSegment(id: string, profile?: TimelineProfile): VideoSegment {
@@ -590,6 +597,9 @@ export function serializeVideoProject(project: VideoProject): SerializedVideoPro
       ...(segment.continuation === "previous_video" && index > 0 && segment.continuation_range ? {
         continuation_range: normalizeVideoContinuationRange(segment.continuation_range, videoSegmentDuration(project.segments[index - 1])),
       } : {}),
+      ...(segment.continuation === "motion_context" ? {
+        motion_context: { ...(segment.motion_context ?? { video_frames: 22 as const, audio_frames: 24 }) },
+      } : {}),
       request: {
         prompt: segment.request.prompt,
         prompt_mode: "preserve_tags_only",
@@ -616,6 +626,7 @@ function mergeSegment(local: VideoSegment | undefined, remote: Partial<VideoSegm
       index: typeof remote.index === "number" ? remote.index : fallback.index,
       continuation: "none",
       continuation_range: undefined,
+      motion_context: undefined,
       source_range: undefined,
       media_source: remoteMediaSource ?? fallback.media_source,
       status: typeof remote.status === "string" ? remote.status as TimelineStatus : "completed",
@@ -628,6 +639,7 @@ function mergeSegment(local: VideoSegment | undefined, remote: Partial<VideoSegm
   const continuation = CONTINUATIONS.has(remote.continuation as ContinuationMode) ? remote.continuation as ContinuationMode : fallback.continuation;
   const remoteContinuationRange = remote.continuation_range && typeof remote.continuation_range === "object" ? remote.continuation_range : undefined;
   const continuationRange = continuation === "previous_video" ? remoteContinuationRange ?? fallback.continuation_range : undefined;
+  const remoteMotionContext = remote.motion_context && typeof remote.motion_context === "object" ? remote.motion_context : undefined;
   return {
     ...fallback,
     ...remote,
@@ -635,6 +647,9 @@ function mergeSegment(local: VideoSegment | undefined, remote: Partial<VideoSegm
     index: typeof remote.index === "number" ? remote.index : fallback.index,
     continuation,
     continuation_range: continuationRange,
+    motion_context: continuation === "motion_context"
+      ? remoteMotionContext ?? fallback.motion_context ?? { video_frames: 22, audio_frames: 24 }
+      : undefined,
     status: typeof remote.status === "string" ? remote.status as TimelineStatus : fallback.status,
     attempts: Array.isArray(remote.attempts) ? remote.attempts : fallback.attempts,
     request: {
@@ -859,7 +874,7 @@ export function validateVideoProject(project: VideoProject, profiles: TimelinePr
         const duration = Number(asset?.media.duration ?? 0);
         if (asset && Number.isFinite(duration) && duration > 0 && source.end_frame / source.fps > duration + 1 / source.fps) errors.push(`${label} direct media range exceeds the source video`);
       }
-      if (segment.continuation !== "none" || segment.source_range || segment.continuation_range) errors.push(`${label} direct media cannot use H3 continuation or source references`);
+      if (segment.continuation !== "none" || segment.source_range || segment.continuation_range || segment.motion_context) errors.push(`${label} direct media cannot use H3 continuation or source references`);
       return;
     }
     if (segment.media_source) errors.push(`${label} generation segment cannot contain a direct media source`);
@@ -897,7 +912,7 @@ export function validateVideoProject(project: VideoProject, profiles: TimelinePr
       const previousFrames = videoContinuationFrameCount(videoSegmentDuration(project.segments[index - 1]));
       if (range.fps !== H3_GENERATION_FPS || !Number.isInteger(range.start_frame) || !Number.isInteger(range.end_frame) || range.start_frame < 0 || range.end_frame <= range.start_frame || range.end_frame > previousFrames || range.end_frame - range.start_frame > H3_MAX_CONTINUATION_FRAMES) errors.push(`${label} continuation range must be 1..${H3_MAX_CONTINUATION_FRAMES} frames within the previous video at ${H3_GENERATION_FPS}fps`);
     }
-    const referenceBudget = segment.request.references.length + (segment.continuation === "none" ? 0 : 1) + (segment.source_range ? 1 : 0);
+    const referenceBudget = segment.request.references.length + (["tail_frame", "previous_video"].includes(segment.continuation) ? 1 : 0) + (segment.source_range ? 1 : 0);
     if (referenceBudget > 6) errors.push(`${label} exceeds the six references budget including continuation`);
     const ids = segment.request.references.map((reference) => reference.asset_id ?? reference.id ?? "");
     if (ids.some((id) => !ASSET_ID.test(id)) || new Set(ids).size !== ids.length) errors.push(`${label} has invalid or duplicate references`);
@@ -943,6 +958,13 @@ export function validateVideoProject(project: VideoProject, profiles: TimelinePr
     if (audioDurationTotal > 15 + 1e-6) errors.push(`${label} selected reference audio may total at most 15 seconds`);
     if (segment.continuation === "tail_frame" && (segment.request.references.length > 1 || segment.request.references.some((reference) => reference.role !== "last_frame"))) errors.push(`${label} tail-frame continuation only accepts one optional last_frame image reference`);
     if (segment.continuation === "previous_video" && segment.request.references.some((reference) => ["first_frame", "last_frame"].includes(reference.role))) errors.push(`${label} previous-video continuation cannot mix first_frame or last_frame roles`);
+    if (segment.continuation === "motion_context") {
+      const settings = segment.motion_context ?? { video_frames: 22, audio_frames: 24 };
+      if (![5, 22, 39, 56].includes(settings.video_frames)) errors.push(`${label} Motion Context video frames must be 5, 22, 39, or 56`);
+      if (!Number.isInteger(settings.audio_frames) || settings.audio_frames < 0 || settings.audio_frames > 240) errors.push(`${label} Motion Context audio frames must be an integer in 0..240`);
+      if (segment.request.references.some((reference) => reference.role === "first_frame")) errors.push(`${label} Motion Context cannot be combined with a first-frame reference`);
+      if (index > 0 && !isVideoMediaSegment(project.segments[index - 1]) && segment.request.parameters.aspect_ratio !== project.segments[index - 1].request.parameters.aspect_ratio) errors.push(`${label} Motion Context must keep the previous aspect ratio`);
+    }
     if (index > 0 && segment.continuation === "tail_frame" && !isVideoMediaSegment(project.segments[index - 1]) && segment.request.parameters.aspect_ratio !== project.segments[index - 1].request.parameters.aspect_ratio) errors.push(`${label} tail-frame continuation must keep the previous aspect ratio`);
     if (storyboard && segment.source_range) {
       const range = segment.source_range;

@@ -89,7 +89,9 @@ export function createGateway({ apiOrigin, webOrigin, apiKey = "", allowedApiOri
     allowedApiOrigins.map((origin, index) => normalizedPublicOrigin(origin, `allowedApiOrigins[${index}]`)),
   );
   return http.createServer((request, response) => {
-    const isApi = request.url === "/api" || request.url?.startsWith("/api/");
+    // /health is the stable CLI/SSH readiness contract. Keep routing it to
+    // Python alongside /api/* instead of letting the UI server render it.
+    const isApi = request.url === "/health" || request.url === "/api" || request.url?.startsWith("/api/");
     if (isApi && request.headers.origin && !isAllowedApiOrigin(request.headers.origin, request.headers.host, allowedOrigins)) {
       response.writeHead(403, { "content-type": "application/json; charset=utf-8" });
       response.end(JSON.stringify({ error: "forbidden_origin", message: "API access is only allowed from the public web origin" }));

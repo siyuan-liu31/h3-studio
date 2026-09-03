@@ -121,7 +121,7 @@ The Long Video workspace places existing footage and pending generated segments 
   <img src="docs/assets/readme/long-video-editor.png" width="100%" alt="MiniMax H3 Video Studio Long Video editor with a monitor, storyboard timeline, and existing media segment">
 </p>
 
-Each pending segment can run independently, continue from the previous segment's final frame, or use the previous video as a Ref2VA reference. Continuation settings, aspect ratio, effective duration, sampling profile, LoRA strength, and seed are saved with the project.
+Each pending segment can run independently, continue from the previous segment's final frame, use the previous video as a Ref2VA reference, or carry the prior H3 video/audio latent through Motion Context. Continuation settings, aspect ratio, effective duration, sampling profile, LoRA strength, step count, and seed are saved with the project.
 
 <p align="center">
   <img src="docs/assets/readme/long-video-continuation.png" width="100%" alt="Long Video segment configured to continue from the previous video">
@@ -133,9 +133,11 @@ flowchart LR
   C -->|None| N[Generate independently]
   C -->|Previous final frame| F[Final frame as Picture 1]
   C -->|Previous video| V[Video as Ref2VA reference]
+  C -->|Motion Context| L[Video and audio latent plus head trim]
   N --> S2[Segment 2]
   F --> S2
   V --> S2
+  L --> S2
   S2 --> S3[Later segments]
   S1 --> Merge[Merge in order]
   S2 --> Merge
@@ -144,8 +146,9 @@ flowchart LR
 
 - Each segment supports about 5.17–15.08 seconds. Failed segments can be rerun; upstream changes invalidate dependent downstream segments so they can be recalculated.
 - When a finished 362-frame segment becomes the next segment's video reference, only a system-derived 15-second reference copy is trimmed. The final merge still uses the complete segment.
+- Motion Context supports both Base and Turbo LoRA Profiles, preserves the requested Profile-bounded step count, and automatically removes reused head frames before concatenation. Adjacent latent-linked segments must keep the same output dimensions.
 - FFmpeg performs an auditable hard-cut merge. MiniMax H3 Video Studio does not claim automatic seamless audio/video transitions.
-- Stop jobs, generate from a plan, merge a long video, and download the result. See [Long Video](docs/long-video.md) for the complete contract.
+- Run the full pipeline with `h3ctl video compose`, or use the atomic project/trim/concat commands separately. See [Long Video](docs/long-video.md) and [Motion Context composition](docs/motion-context-long-video.md) for the complete contracts.
 
 ### Asset and result management
 
@@ -156,7 +159,11 @@ flowchart LR
 
 ### Go CLI for Agent automation
 
-`h3ctl` exposes stable atomic commands for asset upload/download, image and video generation, resumable job waiting, endpoint-frame extraction, media derivation, and long-video projects. It also includes an isolated local `douyin parse|download|serve` utility backed by `yt-dlp`, with a loopback-only Swagger API; this utility never opens the H3 SSH context. The CLI supports local files, remote asset locators, SSH contexts for changing rented-machine addresses, and Agent-friendly JSON/JSONL output. See the [Go CLI guide](docs/cli.md) for build, connection, command, cookie-safety, and local API details.
+`h3ctl` exposes stable atomic commands for asset upload/download, image and video generation, resumable job waiting, endpoint-frame extraction, media derivation, and long-video projects. `h3ctl video compose` adds an Agent-friendly end-to-end path from a version-pinned project spec to a downloaded final movie while keeping every project operation independently callable. It also includes an isolated local `douyin parse|download|serve` utility backed by `yt-dlp`, with a loopback-only Swagger API; this utility never opens the H3 SSH context. The CLI supports local files, remote asset locators, SSH contexts for changing rented-machine addresses, and JSON/JSONL output. See the [Go CLI guide](docs/cli.md) for build, connection, command, cookie-safety, and local API details.
+
+```bash
+h3ctl video compose --spec trilogy.json --to final.mp4 --timeout 0
+```
 
 > Branding compatibility: the CLI remains `h3ctl`. Existing `H3_STUDIO_*` environment variables, `h3-studio` data paths, API contracts, and persisted browser keys remain unchanged.
 
@@ -177,7 +184,7 @@ Requirements:
 
 From the project root:
 
-1. Copy the configuration, verify the ComfyUI URL, data directories, and model filenames, then replace the example API key with a strong random value.
+1. Copy the configuration and verify the ComfyUI URL, data directories, and model filenames. Loopback and SSH-tunnel use needs no API key; leave both key fields empty unless you intentionally enable authentication for a public deployment.
 
    ```bash
    cp .env.example .env.local
@@ -258,9 +265,10 @@ Use [`.env.example`](.env.example) as the baseline. `h3studio.py` automatically 
 | `H3_STUDIO_DATA_ROOT` | Asset and task metadata directory; use a data volume on remote machines |
 | `H3_STUDIO_COMFY_INPUT` / `H3_STUDIO_COMFY_OUTPUT` | ComfyUI input and output directories |
 | `H3_STUDIO_*_MODEL` / `H3_STUDIO_*_LORA` | Filenames used by model profiles |
-| `H3_STUDIO_API_KEY` / `H3_STUDIO_PROXY_API_KEY` | The same key used for API validation and the same-origin proxy |
+| `H3_STUDIO_API_KEY` / `H3_STUDIO_PROXY_API_KEY` | Optional matching key for public deployments; leave both empty for loopback/SSH use |
 | `H3_STUDIO_COMFY_IDLE_FREE_SECONDS` | Seconds before calling `/free` after the global ComfyUI queue becomes idle; `0` disables it |
 | `H3_STUDIO_MAX_ASSET_STORAGE_BYTES` | Asset storage limit |
+| `H3_STUDIO_MAX_MOTION_CONTEXT_STORAGE_BYTES` | Durable Motion Context latent storage limit |
 | `H3_STUDIO_MAX_ACTIVE_JOBS` | Active job limit |
 | `H3_STUDIO_MAX_PROJECT_JSON_BYTES` | Long Video project definition limit; defaults to 32 MiB |
 | `H3_STUDIO_ASSET_TTL_DAYS` | Default retention period for administrator-triggered garbage collection |

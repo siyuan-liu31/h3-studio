@@ -161,6 +161,22 @@ class ResumeSamplingPlan:
             raise ValueError("resume sampling plan is incomplete")
 
 
+@dataclass(frozen=True, slots=True)
+class MotionContextPlan:
+    """Per-render chain state; sampling steps remain owned by GenerationSpec."""
+
+    checkpoint_input: str = ""
+    save_context: bool = False
+    video_frames: int = 22
+    audio_frames: int = 24
+
+    def __post_init__(self) -> None:
+        if self.video_frames not in {5, 22, 39, 56}:
+            raise ValueError("Motion Context video_frames must be 5, 22, 39, or 56")
+        if isinstance(self.audio_frames, bool) or not 0 <= self.audio_frames <= 240:
+            raise ValueError("Motion Context audio_frames must be from 0 through 240")
+
+
 def h3_frame_count(duration_seconds: float) -> int:
     """Snap to H3's 17k+5 grid without exceeding the supported output limit."""
     candidate = 5 + 17 * max(0, math.ceil((duration_seconds * 24 - 5) / 17))
@@ -1330,9 +1346,12 @@ def parse_generation_request(
 def compile_video_workflow(
     spec: GenerationSpec, config: Config, job_id: str,
     resume_plan: ResumeSamplingPlan | None = None,
+    motion_context_plan: MotionContextPlan | None = None,
 ) -> dict[str, Any]:
     if spec.output_type != "video":
         raise ValueError("video spec required")
+    if resume_plan is not None and motion_context_plan is not None:
+        raise ValueError("resumable sampling and Motion Context cannot share one render")
     if spec.director_mode in {"v2v", "rv2v"}:
         source = next((item for item in spec.references if item.asset_id == spec.source_asset_id), None)
         videos = [item for item in spec.references if item.kind == "video"]
@@ -1499,6 +1518,45 @@ def compile_video_workflow(
             workflow[node_id] = {"class_type": "LoadImage", "inputs": {"image": reference.comfy_path}}
             conditioning[reference.role] = [node_id, 0]
         workflow["8"] = {"class_type": "MiniMaxH3ImageToVideo", "inputs": conditioning}
+
+    if motion_context_plan is not None:
+        if motion_context_plan.checkpoint_input:
+            workflow["21"] = {
+                "class_type": "H3StudioLoadLatent",
+                "inputs": {"latent": motion_context_plan.checkpoint_input},
+            }
+            workflow["22"] = {
+                "class_type": "MiniMaxH3MotionContext",
+                "inputs": {
+                    "conditioning": ["8", 0],
+                    "vae": ["6", 0],
+                    "latent": ["8", 1],
+                    "context_length": str(motion_context_plan.video_frames),
+                    "audio_context_length": motion_context_plan.audio_frames,
+                    "context_latent": ["21", 0],
+                },
+            }
+            workflow["10"]["inputs"]["conditioning"] = ["22", 0]
+            workflow["23"] = {
+                "class_type": "MiniMaxH3MotionContextTrim",
+                "inputs": {
+                    "images": ["14", 0],
+                    "audio": ["15", 0],
+                    "trim_frames": ["22", 1],
+                    "fps": 24.0,
+                    "match_tail": True,
+                },
+            }
+            workflow["16"]["inputs"].update({"images": ["23", 0], "audio": ["23", 1]})
+        if motion_context_plan.save_context:
+            workflow["19"] = {
+                "class_type": "H3StudioSaveLatent",
+                "inputs": {
+                    "samples": ["13", 0],
+                    "video_done": ["17", 0],
+                    "filename_prefix": f"h3-studio/motion-context/{job_id}",
+                },
+            }
     return workflow
 
 
@@ -1888,6 +1946,7 @@ def compile_flux2_klein_workflow(spec: GenerationSpec, job_id: str) -> dict[str,
 def compile_workflow(
     spec: GenerationSpec, config: Config, job_id: str,
     resume_plan: ResumeSamplingPlan | None = None,
+    motion_context_plan: MotionContextPlan | None = None,
 ) -> dict[str, Any]:
     if spec.compiler not in {
         "h3_fl", "h3_ref", "checkpoint_t2i", "checkpoint_img2img",
@@ -1896,7 +1955,7 @@ def compile_workflow(
     }:
         raise CapabilityError("workflow profile selected an unsupported compiler")
     if spec.compiler in {"h3_fl", "h3_ref"}:
-        return compile_video_workflow(spec, config, job_id, resume_plan)
+        return compile_video_workflow(spec, config, job_id, resume_plan, motion_context_plan)
     if spec.compiler == "z_image_t2i":
         return compile_z_image_workflow(spec, job_id)
     if spec.compiler == "z_image_img2img":
@@ -1937,6 +1996,7 @@ def workflow_evidence(workflow: dict[str, Any], spec: GenerationSpec, job_id: st
         if isinstance(node, dict) and node.get("class_type") == "SplitSigmas"
     ]
     h3_conditioning = node_inputs("MiniMaxH3ReferenceToVideo") or node_inputs("MiniMaxH3ImageToVideo")
+    motion_context = node_inputs("MiniMaxH3MotionContext")
     compiled_prompt = h3_conditioning.get("prompt")
     if not isinstance(compiled_prompt, str) and spec.output_type == "image":
         if spec.compiler == "qwen_image_edit":
@@ -1979,4 +2039,11 @@ def workflow_evidence(workflow: dict[str, Any], spec: GenerationSpec, job_id: st
         "resumable_sampling": bool(node_inputs("SaveLatent")),
         "resume_from_checkpoint": bool(node_inputs("LoadLatent")),
         "sigma_splits": [item.get("step") for item in split_sigmas if isinstance(item, dict)],
+        "motion_context": {
+            "enabled": bool(motion_context),
+            "video_frames": int(motion_context.get("context_length", 0) or 0),
+            "audio_frames": int(motion_context.get("audio_context_length", 0) or 0),
+            "trimmed": bool(node_inputs("MiniMaxH3MotionContextTrim")),
+            "context_saved": bool(node_inputs("H3StudioSaveLatent")),
+        },
     }

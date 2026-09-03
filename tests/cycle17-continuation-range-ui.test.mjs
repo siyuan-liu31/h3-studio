@@ -31,7 +31,7 @@ test("switching continuation initializes or clears the range from the previous s
 
   assert.match(source, /continuation === "previous_video" && previous[\s\S]{0,120}defaultVideoContinuationRange\(previous\.request\.parameters\.duration\)/);
   assert.match(source, /continuation_range: continuationRange/);
-  assert.match(source, /segment\.continuation === "previous_video" && previous && <ContinuationRangeEditor/);
+  assert.match(source, /segment\.continuation === "previous_video" && previous && \(\s*<ContinuationRangeEditor/);
   assert.doesNotMatch(source, /segment\.continuation !== "previous_video" && previous && <ContinuationRangeEditor/);
 });
 

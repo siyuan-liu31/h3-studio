@@ -37,6 +37,25 @@ func executeTest(t *testing.T, args []string, in string) (int, string, string) {
 	return code, out.String(), stderr.String()
 }
 
+func TestVideoHelpDocumentsComposeRecoveryAndTrimAlias(t *testing.T) {
+	code, out, stderr := executeTest(t, []string{"--server", "http://127.0.0.1:1", "video", "--help"}, "")
+	if code != 0 || stderr != "" {
+		t.Fatalf("code=%d stderr=%q", code, stderr)
+	}
+	for _, expected := range []string{"video compose", "video trim", "video concat", "motion_context", "project_id", "Turbo4"} {
+		if !strings.Contains(out, expected) {
+			t.Fatalf("help is missing %q: %s", expected, out)
+		}
+	}
+}
+
+func TestVideoComposeRejectsMissingOutputBeforeNetwork(t *testing.T) {
+	code, _, stderr := executeTest(t, []string{"--server", "http://127.0.0.1:1", "video", "compose", "--spec", "-"}, `{}`)
+	if code != 2 || !strings.Contains(stderr, "requires --spec PATH|- --to PATH") {
+		t.Fatalf("code=%d stderr=%q", code, stderr)
+	}
+}
+
 type commandFakeProcess struct {
 	done    chan struct{}
 	once    sync.Once
@@ -771,6 +790,7 @@ func TestConnectionDecisionCoversEveryRemoteCommandAction(t *testing.T) {
 		"media":      {"frame", "endpoints", "trim", "extract-audio", "remove-audio", "prepare-reference", "list", "get", "download", "save", "delete"},
 		"voice":      {"convert", "status", "wait", "cancel", "delete", "download", "capabilities"},
 		"project":    {"list", "create", "apply", "get", "delete", "run", "wait", "stop", "rerun", "merge", "download"},
+		"video":      {"compose", "trim", "concat"},
 	}
 	if len(networkCommandActions) != len(actions) {
 		t.Fatalf("network policy top-level drift: %#v", networkCommandActions)
