@@ -19,6 +19,7 @@ from typing import Any, Callable
 
 from .comfy import ComfyClient, find_outputs
 from .comfy_tasks import ComfyTaskCoordinator
+from .character_migration import RECIPE_TYPE, validate_recipe
 from .config import Config
 from .errors import ApiError
 from .motion_context import MotionContextStore
@@ -88,7 +89,7 @@ class VideoProjectManager:
     # ---- public API -----------------------------------------------------
 
     def create(self, body: dict[str, Any]) -> dict[str, Any]:
-        title, segments, storyboard = self._validate_definition(body)
+        title, segments, storyboard, recipe = self._validate_definition(body)
         now = time.time()
         project_id = uuid.uuid4().hex
         project = {
@@ -105,6 +106,8 @@ class VideoProjectManager:
         }
         if storyboard is not None:
             project["storyboard"] = storyboard
+        if recipe is not None:
+            project["recipe"] = recipe
         with self.lock:
             self.store.put(project_id, project)
         return self.receipt(project)
@@ -117,7 +120,7 @@ class VideoProjectManager:
 
     def update(self, project_id: str, body: dict[str, Any]) -> dict[str, Any]:
         project_id = validate_id(project_id, "project id")
-        title, requested, storyboard = self._validate_definition(body)
+        title, requested, storyboard, recipe = self._validate_definition(body)
         with self.lock:
             project = self.store.get(project_id)
             if project.get("status") in {"running", "stopping", "merging"}:
@@ -127,6 +130,7 @@ class VideoProjectManager:
                 for segment in project.get("segments", [])
                 if isinstance(segment, dict)
             }
+            recipe_changed = project.get("recipe") != recipe
             rebuilt: list[dict[str, Any]] = []
             changed_indices: list[int] = []
             source_changed_indices: set[int] = set()
@@ -170,6 +174,12 @@ class VideoProjectManager:
                     rebuilt.append(segment)
             if set(old_by_id) != {str(segment["id"]) for segment in requested} and not changed_indices and rebuilt:
                 changed_indices.append(0)
+            if recipe_changed and rebuilt:
+                changed_indices = sorted(set(changed_indices) | set(range(len(rebuilt))))
+                for segment in rebuilt:
+                    if segment.get("kind") != "media":
+                        segment.update({"status": "stale", "error": "character migration recipe changed"})
+                        segment.pop("job_id", None)
             reclaim_indices: set[int] = set()
             old_segments = project.get("segments", [])
             for changed_index in changed_indices:
@@ -220,6 +230,10 @@ class VideoProjectManager:
                 project.pop("storyboard", None)
             else:
                 project["storyboard"] = storyboard
+            if recipe is None:
+                project.pop("recipe", None)
+            else:
+                project["recipe"] = recipe
             self.store.put(project_id, project)
             self._prune_motion_contexts(project)
         return self.receipt(project)
@@ -495,10 +509,10 @@ class VideoProjectManager:
 
     def _validate_definition(
         self, body: Any,
-    ) -> tuple[str, list[dict[str, Any]], dict[str, Any] | None]:
+    ) -> tuple[str, list[dict[str, Any]], dict[str, Any] | None, dict[str, Any] | None]:
         if not isinstance(body, dict):
             raise ApiError(400, "invalid_project", "project body must be an object")
-        extra = set(body) - {"title", "segments", "storyboard"}
+        extra = set(body) - {"title", "segments", "storyboard", "recipe"}
         if extra:
             raise ApiError(400, "invalid_project", f"unsupported project fields: {', '.join(sorted(extra))}")
         title = body.get("title", "")
@@ -508,6 +522,9 @@ class VideoProjectManager:
         if not isinstance(raw_segments, list) or len(raw_segments) > MAX_SEGMENTS:
             raise ApiError(400, "invalid_segments", f"segments must be an array of at most {MAX_SEGMENTS} items")
         storyboard = self._validate_storyboard(body.get("storyboard"))
+        raw_recipe = body.get("recipe")
+        recipe = validate_recipe(raw_recipe) if raw_recipe is not None else None
+        include_source_audio = bool(recipe and recipe.get("audio_policy") == "reference-source")
         seen: set[str] = set()
         result: list[dict[str, Any]] = []
         for index, raw in enumerate(raw_segments):
@@ -556,6 +573,7 @@ class VideoProjectManager:
             )
             request = self._validate_request(
                 raw.get("request"), continuation, source_range, continuation_range,
+                include_source_audio=include_source_audio,
             )
             segment = {
                 "id": segment_id, "index": index, "continuation": continuation,
@@ -569,7 +587,7 @@ class VideoProjectManager:
                 segment["motion_context"] = motion_context
             result.append(segment)
             seen.add(segment_id)
-        return title.strip(), result, storyboard
+        return title.strip(), result, storyboard, recipe
 
     @staticmethod
     def _validate_motion_context(value: Any, continuation: str) -> dict[str, int] | None:
@@ -618,7 +636,10 @@ class VideoProjectManager:
         media = asset.get("media")
         if not isinstance(media, dict):
             media = {}
-        fps_value = media.get("source_fps") or media.get("fps")
+        # Uploaded non-24fps videos retain their original file for download and
+        # a single normalized Comfy input. Character-migration source ranges
+        # operate on that 24fps planning timeline.
+        fps_value = media.get("reference_fps") or media.get("fps") if media.get("normalized_to_24fps") else media.get("fps")
         fps = self._finite_number(fps_value, "source video fps")
         duration_value = media.get("duration")
         try:
@@ -760,8 +781,11 @@ class VideoProjectManager:
         if start_frame < 0 or end_frame <= start_frame or end_frame > source_frame_count:
             raise ApiError(400, "source_range_bounds", "source_range must be a positive interval inside the source video")
         duration = (end_frame - start_frame) / fps
-        if not math.isfinite(duration) or duration <= 0 or duration > 15.0:
-            raise ApiError(400, "source_range_duration", "source_range duration must be greater than 0 and at most 15.0 seconds")
+        if not math.isfinite(duration) or duration <= 0 or duration > H3_MAX_DURATION_SECONDS:
+            raise ApiError(
+                400, "source_range_duration",
+                f"source_range duration must be greater than 0 and at most {H3_MAX_DURATION_SECONDS:g} seconds",
+            )
         return {
             "asset_id": asset_id, "start_frame": start_frame,
             "end_frame": end_frame, "fps": fps,
@@ -823,6 +847,8 @@ class VideoProjectManager:
         continuation: str,
         source_range: dict[str, Any] | None = None,
         continuation_range: dict[str, Any] | None = None,
+        *,
+        include_source_audio: bool = False,
     ) -> dict[str, Any]:
         if not isinstance(value, dict):
             raise ApiError(400, "invalid_segment_request", "segment request must be an object")
@@ -971,16 +997,23 @@ class VideoProjectManager:
         if source_range is not None:
             source_id = next(placeholders)
             occupied.add(source_id)
-            preflight = self._with_source_range_reference(preflight, source_id)
+            preflight = self._with_source_range_reference(
+                preflight, source_id, include_audio=include_source_audio,
+            )
             synthetic[source_id] = {
                 "id": source_id,
                 "filename": "derived-source-range.mp4",
                 "comfy_path": "h3-studio/derived-source-range.mp4",
                 "kind": "video",
                 "media": {
-                    "duration": (source_range["end_frame"] - source_range["start_frame"]) / source_range["fps"],
+                    # H3 generation accepts 362 frames, while an individual
+                    # reference remains capped at 15 seconds (360 frames).
+                    "duration": min(
+                        15.0,
+                        (source_range["end_frame"] - source_range["start_frame"]) / source_range["fps"],
+                    ),
                     "fps": 24.0, "reference_fps": 24.0,
-                    "has_video": True, "has_audio": False,
+                    "has_video": True, "has_audio": include_source_audio,
                 },
             }
         if pixel_continuation:
@@ -1035,6 +1068,8 @@ class VideoProjectManager:
         }
         if isinstance(project.get("storyboard"), dict):
             result["storyboard"] = dict(project["storyboard"])
+        if isinstance(project.get("recipe"), dict):
+            result["recipe"] = json.loads(json.dumps(project["recipe"]))
         for segment in project.get("segments", []):
             if segment.get("kind") == "media":
                 media_source = dict(segment.get("media_source", {}))
@@ -1304,6 +1339,15 @@ class VideoProjectManager:
                         project["status"] = "stopped" if state == "canceled" else "failed"
                     if isinstance(job.get("motion_context_state"), dict):
                         active["motion_context_state"] = dict(job["motion_context_state"])
+                    if (
+                        isinstance(project.get("recipe"), dict)
+                        and project["recipe"].get("type") == RECIPE_TYPE
+                    ):
+                        # The immutable source range and completed job output
+                        # are sufficient for restart/rerun. The private padded
+                        # model input is no longer needed once the job is
+                        # terminal, so long projects keep bounded disk usage.
+                        self._reclaim_segment_assets(project, [index])
                     project["updated_at"] = time.time()
                     self.store.put(project_id, project)
                     return state == "completed"
@@ -1314,6 +1358,7 @@ class VideoProjectManager:
         self, project: dict[str, Any], index: int,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         segment = project["segments"][index]
+        self._validate_recipe_assets(project)
         request = json.loads(json.dumps(segment["request"]))
         # Long-video execution always follows the same read-only prompt policy
         # as single-video generation, including legacy persisted projects.
@@ -1629,8 +1674,8 @@ class VideoProjectManager:
         source_asset = self.assets.get(str(source_range["asset_id"]))
         if source_asset.get("kind") != "video":
             raise ApiError(409, "source_asset_not_video", "source_range asset is no longer a video")
-        source_path = self.assets.content_path(source_asset)
-        source_sha = self._sha256(source_path)
+        original_path = self.assets.content_path(source_asset)
+        source_sha = self._sha256(original_path)
         recorded_sha = source_asset.get("sha256")
         if (
             isinstance(recorded_sha, str)
@@ -1638,6 +1683,17 @@ class VideoProjectManager:
             and recorded_sha != source_sha
         ):
             raise ApiError(409, "source_integrity", "source_range asset no longer matches its recorded hash")
+        recipe = project.get("recipe") if isinstance(project.get("recipe"), dict) else {}
+        if recipe.get("type") == RECIPE_TYPE and recipe.get("source_sha256") != source_sha:
+            raise ApiError(409, "source_integrity", "source video changed after character-migration planning; create a new plan")
+        source_path = original_path
+        media = source_asset.get("media") if isinstance(source_asset.get("media"), dict) else {}
+        if media.get("normalized_to_24fps"):
+            comfy_path = str(source_asset.get("comfy_path", ""))
+            relative = comfy_path.removeprefix("h3-studio/")
+            source_path = secure_join(self.assets.upload_root, relative)
+            if not source_path.is_file():
+                raise ApiError(409, "source_normalization_missing", "the source 24fps normalization is missing; re-upload the source")
 
         start_frame = int(source_range["start_frame"])
         end_frame = int(source_range["end_frame"])
@@ -1646,13 +1702,41 @@ class VideoProjectManager:
         duration = frame_count / fps
         temp = self.config.data_root / "tmp" / f"source-range-{uuid.uuid4().hex}.mp4"
         temp.parent.mkdir(parents=True, exist_ok=True)
+        is_migration = recipe.get("type") == RECIPE_TYPE
+        include_audio = is_migration and recipe.get("audio_policy") == "reference-source"
+        segmentation = recipe.get("segmentation") if isinstance(recipe.get("segmentation"), dict) else {}
+        configured_frames = int(segmentation.get("segment_frames", frame_count) or frame_count)
+        # H3 references have a hard 15-second/360-frame ceiling. Migration
+        # tail windows are padded only in this private model input so source
+        # timeline accounting and final trimming remain exact.
+        materialized_frames = min(360, configured_frames) if is_migration else min(360, frame_count)
+        decoded_frames = min(frame_count, materialized_frames)
+        pad_frames = max(0, materialized_frames - decoded_frames)
+        video_filter = f"trim=start_frame={start_frame}:end_frame={start_frame + decoded_frames},setpts=PTS-STARTPTS"
+        if pad_frames:
+            video_filter += f",tpad=stop_mode=clone:stop={pad_frames}"
         command = [
             "ffmpeg", "-y", "-v", "error", "-i", str(source_path),
             "-map", "0:v:0",
-            "-vf", f"trim=start_frame={start_frame}:end_frame={end_frame},setpts=PTS-STARTPTS",
-            "-frames:v", str(frame_count), "-an", "-c:v", "libx264",
-            "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(temp),
+            "-vf", video_filter,
+            "-frames:v", str(materialized_frames),
         ]
+        if include_audio:
+            start_time = start_frame / fps
+            materialized_duration = materialized_frames / fps
+            decoded_end_time = (start_frame + decoded_frames) / fps
+            command.extend([
+                "-map", "0:a:0", "-af",
+                (
+                    f"atrim=start={start_time:.9f}:end={decoded_end_time:.9f},"
+                    f"asetpts=PTS-STARTPTS,aresample=48000,apad=pad_dur={materialized_duration:.9f},"
+                    f"atrim=duration={materialized_duration:.9f}"
+                ),
+                "-c:a", "aac", "-ar", "48000", "-ac", "2",
+            ])
+        else:
+            command.append("-an")
+        command.extend(["-c:v", "libx264", "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(temp)])
         self._run_command(command, temp, "source range extraction")
         asset = self._import_continuation_asset(
             temp,
@@ -1665,15 +1749,24 @@ class VideoProjectManager:
                 "start_frame": start_frame, "end_frame": end_frame, "fps": fps,
             },
         )
-        prepared = self._with_source_range_reference(request, str(asset["id"]))
+        prepared = self._with_source_range_reference(
+            request, str(asset["id"]), include_audio=include_audio,
+            source_subject=(
+                str(recipe.get("targets", [{}])[0].get("source_subject", ""))
+                if recipe.get("type") == RECIPE_TYPE else ""
+            ),
+        )
         return prepared, {
             "source_asset_id": str(source_asset["id"]),
             "source_sha256": source_sha,
             "start_frame": start_frame, "end_frame": end_frame,
             "fps": fps, "frame_count": frame_count, "duration": duration,
+            "materialized_frame_count": materialized_frames,
+            "input_padding_frames": pad_frames,
             "asset_id": str(asset["id"]), "asset_sha256": asset.get("sha256"),
             "asset_size": asset.get("storage_size", asset.get("size")),
             "asset_kind": asset.get("kind"),
+            "include_audio": include_audio,
         }
 
     def _director_source_or_generic_r2v(
@@ -1707,20 +1800,51 @@ class VideoProjectManager:
             result["source_asset_id"] = asset_id
             result["director_mode"] = "v2v" if len(result.get("references", [])) == 1 else "rv2v"
 
-    def _with_source_range_reference(self, request: dict[str, Any], asset_id: str) -> dict[str, Any]:
+    def _with_source_range_reference(
+        self,
+        request: dict[str, Any],
+        asset_id: str,
+        *,
+        include_audio: bool = False,
+        source_subject: str = "",
+    ) -> dict[str, Any]:
         result = json.loads(json.dumps(request))
         result["references"] = [
             *result.get("references", []),
-            {"asset_id": asset_id, "role": "motion", "include_audio": False},
+            {"asset_id": asset_id, "role": "motion", "include_audio": include_audio},
         ]
-        self._director_source_or_generic_r2v(result, asset_id, {asset_id})
+        if include_audio:
+            # Director V2V currently rejects source audio. Generic Ref2VA is
+            # the supported compiler path for a motion video whose audio must
+            # condition generation; it retains Video 1 / Picture 1 ordering.
+            result.pop("source_asset_id", None)
+            result["director_mode"] = "r2v"
+        else:
+            self._director_source_or_generic_r2v(result, asset_id, {asset_id})
+        source_instruction = (
+            f"Bind <Subject 1> from @{{{asset_id}}} to {source_subject}."
+            if source_subject else f"@{{{asset_id}}}"
+        )
         result["prompt"] = "; ".join(
             part for part in (
                 str(result.get("prompt", "")).strip(),
-                f"@{{{asset_id}}}",
+                source_instruction,
             ) if part
         )
         return result
+
+    def _validate_recipe_assets(self, project: dict[str, Any]) -> None:
+        recipe = project.get("recipe")
+        if not isinstance(recipe, dict) or recipe.get("type") != RECIPE_TYPE:
+            return
+        source = self.assets.get(str(recipe.get("source_asset_id", "")))
+        if source.get("sha256") != recipe.get("source_sha256"):
+            raise ApiError(409, "source_integrity", "source video changed after character-migration planning; create a new plan")
+        targets = recipe.get("targets")
+        target = targets[0] if isinstance(targets, list) and targets and isinstance(targets[0], dict) else {}
+        character = self.assets.get(str(target.get("character_asset_id", "")))
+        if character.get("sha256") != target.get("character_sha256"):
+            raise ApiError(409, "character_integrity", "target character changed after character-migration planning; create a new plan")
 
     def _with_continuation_reference(self, request: dict[str, Any], mode: str, asset_id: str) -> dict[str, Any]:
         result = json.loads(json.dumps(request))
@@ -2457,6 +2581,11 @@ class VideoProjectManager:
             concat_path.write_text(concat_text, encoding="utf-8")
 
             expected_bytes = sum(item["size"] for item in source_evidence) + 16 * 1024 * 1024
+            character_finalization = (
+                isinstance(project.get("recipe"), dict)
+                and project["recipe"].get("type") == RECIPE_TYPE
+            )
+            disk_required_bytes = expected_bytes * (2 if character_finalization else 1)
             merged_root = secure_join(self.config.comfy_output, "h3-studio", "projects")
             merged_root.mkdir(parents=True, exist_ok=True)
             staging_relative = staging.relative_to(self.config.comfy_output.resolve()).as_posix()
@@ -2474,7 +2603,7 @@ class VideoProjectManager:
                 )
                 if existing_bytes + active_reserved + expected_bytes > self.config.max_merged_output_bytes:
                     raise ApiError(507, "merge_quota", "merged-video output quota would be exceeded")
-                if shutil.disk_usage(output_dir).free < expected_bytes:
+                if shutil.disk_usage(output_dir).free < disk_required_bytes:
                     raise ApiError(507, "disk_full", "insufficient free disk space for merged output")
                 latest = self.store.get(project_id)
                 attempt = next(a for a in latest.get("merge_attempts", []) if a["id"] == attempt_id)
@@ -2500,7 +2629,19 @@ class VideoProjectManager:
                 "-c", "copy", "-movflags", "+faststart", "-progress", "pipe:1", "-nostats", str(staging),
             ]
             self._run_merge_command(project_id, command, staging, timeout, cancel_event, total_duration)
+            finalization: dict[str, Any] | None = None
+            if character_finalization:
+                staging, finalization = self._finalize_character_migration(
+                    project, staging, expected, attempt_id, cancel_event,
+                )
             media = AssetStore._probe_media(staging, "video")
+            if finalization is not None:
+                expected_frames = int(finalization["frames"])
+                if int(media.get("frame_count", 0) or 0) != expected_frames:
+                    raise ApiError(422, "character_migration_trim_failed", f"final output must contain exactly {expected_frames} frames")
+                expected_audio = finalization["audio_policy"] != "mute"
+                if (media.get("has_audio") is True) != expected_audio:
+                    raise ApiError(422, "character_migration_audio_failed", "final output stream layout does not match audio_policy")
             staged_sha = self._sha256(staging)
             # Detect replacement while ffmpeg was reading, not just before it.
             for source, evidence in zip(integrity_sources, source_evidence, strict=True):
@@ -2525,6 +2666,7 @@ class VideoProjectManager:
                 "prompt_parts": {}, "parameters": {
                     "kind": "merged_video_project", "segment_count": len(sources),
                     "width": expected[0], "height": expected[1], "fps": 24,
+                    **({"character_migration": finalization} if finalization is not None else {}),
                 },
                 "references": [], "video_project_id": project_id, "synthetic_merge": True,
                 "source_evidence": source_evidence,
@@ -2535,6 +2677,7 @@ class VideoProjectManager:
                 "progress": 100,
                 "sha256": output_evidence["sha256"], "size": destination.stat().st_size,
                 "media": media, "result_job_id": result_job_id, "sources": source_evidence,
+                **({"finalization": finalization} if finalization is not None else {}),
             }
             with self.lock:
                 project = self.store.get(project_id)
@@ -2576,6 +2719,94 @@ class VideoProjectManager:
     @staticmethod
     def _ffconcat_escape(path: Path) -> str:
         return str(path.resolve()).replace("'", "'\\''")
+
+    def _finalize_character_migration(
+        self,
+        project: dict[str, Any],
+        concatenated: Path,
+        dimensions: tuple[int, int],
+        attempt_id: str,
+        cancel_event: threading.Event,
+    ) -> tuple[Path, dict[str, Any]]:
+        """Trim padded tail frames and apply the durable recipe audio policy."""
+        self._validate_recipe_assets(project)
+        recipe = validate_recipe(project.get("recipe"))
+        segmentation = recipe.get("segmentation") if isinstance(recipe.get("segmentation"), dict) else {}
+        output = recipe.get("output") if isinstance(recipe.get("output"), dict) else {}
+        expected_dimensions = (int(output.get("width", 0) or 0), int(output.get("height", 0) or 0))
+        if dimensions != expected_dimensions:
+            raise ApiError(
+                409, "character_migration_dimensions",
+                "generated segment dimensions do not match the planned character-migration output",
+            )
+        frames = int(segmentation.get("source_frames", output.get("frames", 0)) or 0)
+        fps = int(segmentation.get("fps", 24) or 0)
+        if frames <= 0 or fps != 24:
+            raise ApiError(409, "invalid_character_migration_recipe", "recipe must retain a positive 24fps final frame count")
+        duration = frames / 24.0
+        audio_policy = str(recipe.get("audio_policy", ""))
+        processed = concatenated.with_name(f"{concatenated.stem}-final-{uuid.uuid4().hex}.mp4")
+        video_filter = f"trim=start_frame=0:end_frame={frames},setpts=PTS-STARTPTS,fps=24"
+        command = ["ffmpeg", "-y", "-v", "error", "-i", str(concatenated)]
+        audio_index = 0
+        source_path: Path | None = None
+        source_sha: str | None = None
+        if audio_policy == "copy-source":
+            source = self.assets.get(str(recipe["source_asset_id"]))
+            media = source.get("media") if isinstance(source.get("media"), dict) else {}
+            if media.get("has_audio") is not True:
+                raise ApiError(422, "audio_stream_missing", "copy-source requires a usable source audio stream")
+            source_path = self.assets.content_path(source)
+            source_sha = self._sha256(source_path)
+            if source_sha != recipe.get("source_sha256"):
+                raise ApiError(409, "source_integrity", "source video changed before final audio mux")
+            command.extend(["-i", str(source_path)])
+            audio_index = 1
+        if audio_policy == "mute":
+            command.extend(["-vf", video_filter, "-map", "0:v:0", "-an"])
+        else:
+            command.extend([
+                "-filter_complex",
+                (
+                    f"[0:v:0]{video_filter}[v];"
+                    f"[{audio_index}:a:0]asetpts=PTS-STARTPTS,aresample=48000,"
+                    f"apad=pad_dur={duration:.9f},atrim=duration={duration:.9f}[a]"
+                ),
+                "-map", "[v]", "-map", "[a]",
+            ])
+        command.extend([
+            "-frames:v", str(frames), "-c:v", "libx264", "-preset", "medium", "-crf", "18",
+            "-pix_fmt", "yuv420p",
+        ])
+        if audio_policy != "mute":
+            command.extend(["-c:a", "aac", "-ar", "48000", "-ac", "2"])
+        command.extend(["-t", f"{duration:.9f}", "-movflags", "+faststart", str(processed)])
+        try:
+            with self.lock:
+                latest = self.store.get(str(project["id"]))
+                attempt = next(item for item in latest.get("merge_attempts", []) if item.get("id") == attempt_id)
+                attempt["postprocess_relative_path"] = processed.resolve().relative_to(
+                    self.config.comfy_output.resolve()
+                ).as_posix()
+                latest["updated_at"] = time.time()
+                self.store.put(str(project["id"]), latest)
+            self._run_merge_command(
+                str(project["id"]), command, processed,
+                max(300, int(duration * 2 + 120)), cancel_event, duration,
+            )
+            if source_path is not None and self._sha256(source_path) != source_sha:
+                raise ApiError(409, "source_integrity", "source video changed during final audio mux")
+            concatenated.unlink(missing_ok=True)
+            return processed, {
+                "version": recipe["version"], "frames": frames, "fps": 24,
+                "duration": duration, "width": dimensions[0], "height": dimensions[1],
+                "removed_tail_frames": int(segmentation.get("final_trim_frames", 0) or 0),
+                "audio_policy": audio_policy,
+                "audio_end_behavior": "pad_or_trim_to_exact_video_duration" if audio_policy != "mute" else "removed",
+            }
+        except Exception:
+            processed.unlink(missing_ok=True)
+            raise
 
     def _run_merge_command(
         self,
@@ -2729,7 +2960,7 @@ class VideoProjectManager:
         for attempt in project.get("merge_attempts", []):
             if attempt.get("status") != "merging":
                 continue
-            for key in ("staging_relative_path", "destination_relative_path"):
+            for key in ("staging_relative_path", "postprocess_relative_path", "destination_relative_path"):
                 relative = attempt.get(key)
                 if isinstance(relative, str):
                     try:

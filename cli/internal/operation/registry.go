@@ -67,6 +67,12 @@ func ValidateInput(name string, input map[string]any) error {
 		if _, hasAudio := input["audio"]; !hasAudio && input["preset"] != "h3-low-token" {
 			return usageError("input requires audio keep|remove unless preset is h3-low-token")
 		}
+	case "video.character_migration.plan", "video.character_migration.produce":
+		segment := int(numberValueForValidation(input["segment_frames"], 243))
+		overlap := int(numberValueForValidation(input["overlap_frames"], 39))
+		if overlap >= segment {
+			return usageError("input.overlap_frames must be smaller than input.segment_frames")
+		}
 	}
 	return nil
 }
@@ -194,6 +200,10 @@ func buildDefinitions() map[string]Definition {
 	add("media.trim", []string{"source", "start", "end"}, map[string]any{"source": stringRule, "start": numberRule(0), "end": numberRule(0), "audio": boolRule, "display_name": map[string]any{"type": "string"}})
 	add("media.extract_audio", []string{"source"}, map[string]any{"source": stringRule, "display_name": map[string]any{"type": "string"}})
 	add("media.remove_audio", []string{"source"}, map[string]any{"source": stringRule, "display_name": map[string]any{"type": "string"}})
+	add("media.mux_audio", []string{"video", "audio"}, map[string]any{
+		"video": stringRule, "audio": stringRule, "duration": numberRule(0.001),
+		"display_name": map[string]any{"type": "string"},
+	})
 	add("media.prepare_reference", []string{"source"}, map[string]any{
 		"source": stringRule, "preset": enum("h3-low-token"),
 		"max_short_edge": integerRule(32), "max_long_edge": integerRule(32),
@@ -234,6 +244,39 @@ func buildDefinitions() map[string]Definition {
 		"spec": map[string]any{"type": "object"}, "to": stringRule, "force": boolRule,
 		"timeout_seconds": numberRule(0), "poll_seconds": numberRule(0),
 	})
+	legalSegmentFrames := make([]any, 0, 15)
+	for frames := 124; frames <= 362; frames += 17 {
+		legalSegmentFrames = append(legalSegmentFrames, float64(frames))
+	}
+	migrationTarget := object([]string{"character", "source_subject"}, map[string]any{
+		"character":      stringRule,
+		"source_subject": map[string]any{"type": "string", "minLength": float64(3), "maxLength": float64(500)},
+		"details":        map[string]any{"type": "string", "maxLength": float64(4000)},
+	})
+	migrationProperties := map[string]any{
+		"version":         enum("h3.character-migration/v1"),
+		"source":          stringRule,
+		"targets":         map[string]any{"type": "array", "minItems": float64(1), "maxItems": float64(1), "items": migrationTarget},
+		"profile_id":      map[string]any{"type": "string", "minLength": float64(1), "default": "minimax-h3-ref2va"},
+		"profile_version": map[string]any{"type": "string"},
+		"profile_digest":  map[string]any{"type": "string"},
+		"steps":           map[string]any{"type": "integer", "minimum": float64(4), "maximum": float64(50)},
+		"lora_strength":   map[string]any{"type": "number", "minimum": float64(0), "maximum": float64(2)},
+		"seed":            map[string]any{"type": "integer", "minimum": float64(-1)},
+		"segment_frames":  map[string]any{"type": "integer", "enum": legalSegmentFrames, "default": float64(243)},
+		"overlap_frames":  map[string]any{"type": "integer", "enum": []any{float64(5), float64(22), float64(39), float64(56)}, "default": float64(39)},
+		"audio_policy":    map[string]any{"type": "string", "enum": []any{"copy-source", "reference-source", "generate", "mute"}, "default": "copy-source"},
+		"prompt":          map[string]any{"type": "string", "minLength": float64(1), "maxLength": float64(12000)},
+		"title":           map[string]any{"type": "string", "minLength": float64(1), "maxLength": float64(200)},
+	}
+	add("video.character_migration.plan", []string{"version", "source", "targets"}, cloneProperties(migrationProperties))
+	produceProperties := cloneProperties(migrationProperties)
+	produceProperties["to"] = stringRule
+	produceProperties["force"] = boolRule
+	produceProperties["detach"] = boolRule
+	produceProperties["timeout_seconds"] = numberRule(0)
+	produceProperties["poll_seconds"] = numberRule(0)
+	add("video.character_migration.produce", []string{"version", "source", "targets", "to"}, produceProperties)
 	return defs
 }
 
@@ -292,6 +335,9 @@ func validateSchema(schema map[string]any, value any, path string) error {
 		}
 		if maximum, ok := number(schema["maxItems"]); ok && float64(len(array)) > maximum {
 			return usageError("%s must contain at most %g items", path, maximum)
+		}
+		if minimum, ok := number(schema["minItems"]); ok && float64(len(array)) < minimum {
+			return usageError("%s must contain at least %g items", path, minimum)
 		}
 		if schema["uniqueItems"] == true {
 			seen := map[string]bool{}
@@ -355,6 +401,13 @@ func validateSchema(schema map[string]any, value any, path string) error {
 		return usageError("%s has an unsupported value", path)
 	}
 	return nil
+}
+
+func numberValueForValidation(value any, fallback float64) float64 {
+	if result, ok := value.(float64); ok {
+		return result
+	}
+	return fallback
 }
 
 func number(value any) (float64, bool) {

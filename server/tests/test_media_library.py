@@ -115,6 +115,54 @@ class MediaServiceTests(unittest.TestCase):
         self.assertNotIn("frame;touch pwned.jpg", commands[0])
         self.assertFalse((self.root / "pwned.jpg").exists())
 
+    def test_mux_audio_is_atomic_strict_and_pads_or_trims_to_video(self) -> None:
+        audio = self.root / "audio.wav"
+        audio.write_bytes(b"audio")
+        audio_meta = {
+            "kind": "audio", "media": {"duration": 2.0},
+            "source_receipt": {"type": "asset", "asset_id": "b" * 32},
+        }
+        commands = []
+
+        def capture(command, destination, **_kwargs):
+            commands.append(command)
+            destination.write_bytes(b"muxed")
+
+        with patch.object(self.service, "_run", side_effect=capture), patch.object(
+            AssetStore, "_probe_media", return_value={"duration": 10.0, "has_audio": True, "fps": 24}
+        ):
+            receipt = self.service.mux_audio(self.source, self.meta, audio, audio_meta, {"duration": 10.0})
+        self.assertEqual(receipt["operation"], "mux_audio")
+        self.assertEqual(receipt["parameters"]["audio_end_behavior"], "pad_or_trim_to_video")
+        self.assertTrue(any("apad=pad_dur=10.000000000" in part for part in commands[0]))
+        self.assertIsInstance(commands[0], list)
+        self.assertEqual(self.assets.list(), [])
+        with self.assertRaises(ApiError) as missing:
+            self.service.mux_audio(
+                self.source, self.meta, self.source,
+                {"kind": "video", "media": {"duration": 10, "has_audio": False}}, {},
+            )
+        self.assertEqual(missing.exception.code, "audio_stream_missing")
+
+    @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "ffmpeg is required")
+    def test_real_mux_audio_preserves_video_duration_and_audio_stream(self) -> None:
+        video = self.root / "silent.mp4"
+        audio = self.root / "short.wav"
+        subprocess.run([
+            "ffmpeg", "-nostdin", "-y", "-v", "error", "-f", "lavfi", "-i",
+            "color=black:s=64x64:r=24:d=2", "-an", "-c:v", "libx264", "-pix_fmt", "yuv420p", str(video),
+        ], check=True)
+        subprocess.run([
+            "ffmpeg", "-nostdin", "-y", "-v", "error", "-f", "lavfi", "-i",
+            "sine=frequency=440:duration=0.5", "-c:a", "pcm_s16le", str(audio),
+        ], check=True)
+        video_meta = {"kind": "video", "media": AssetStore._probe_media(video, "video"), "source_receipt": {"type": "asset", "asset_id": "a" * 32}}
+        audio_meta = {"kind": "audio", "media": AssetStore._probe_media(audio, "audio"), "source_receipt": {"type": "asset", "asset_id": "b" * 32}}
+        receipt = self.service.mux_audio(video, video_meta, audio, audio_meta, {"duration": 2.0})
+        self.assertTrue(receipt["media"]["has_audio"])
+        self.assertEqual(receipt["media"]["frame_count"], 48)
+        self.assertAlmostEqual(float(receipt["media"]["duration"]), 2.0, delta=0.05)
+
     def test_first_and_last_frame_build_exact_tail_decode_commands(self) -> None:
         commands = []
 

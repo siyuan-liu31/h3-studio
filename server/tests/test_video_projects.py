@@ -14,6 +14,7 @@ from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
+from server.character_migration import SCHEMA_VERSION as MIGRATION_VERSION, plan as plan_migration
 from server.errors import ApiError
 from server.profiles import DEFAULT_REGISTRY, H3_MAX_DURATION_SECONDS
 from server.security import secure_join
@@ -390,7 +391,7 @@ class VideoProjectTests(unittest.TestCase):
                 })
             self.assertEqual(raised.exception.code, code)
 
-    def test_source_range_enforces_source_bounds_fps_and_15_second_contract(self) -> None:
+    def test_source_range_enforces_source_bounds_fps_and_h3_frame_contract(self) -> None:
         source_id = "e" * 32
         other_id = "f" * 32
         image_id = "1" * 32
@@ -414,11 +415,11 @@ class VideoProjectTests(unittest.TestCase):
 
         accepted = self.manager.create(body({
             "asset_id": source_id, "start_frame": 0,
-            "end_frame": 360, "fps": 24.0,
+            "end_frame": 362, "fps": 24.0,
         }))
-        self.assertEqual(accepted["segments"][0]["source_range"]["end_frame"], 360)
+        self.assertEqual(accepted["segments"][0]["source_range"]["end_frame"], 362)
         cases = (
-            ({"asset_id": source_id, "start_frame": 0, "end_frame": 361, "fps": 24.0}, "source_range_duration"),
+            ({"asset_id": source_id, "start_frame": 0, "end_frame": 363, "fps": 24.0}, "source_range_duration"),
             ({"asset_id": source_id, "start_frame": -1, "end_frame": 20, "fps": 24.0}, "source_range_bounds"),
             ({"asset_id": source_id, "start_frame": 20, "end_frame": 20, "fps": 24.0}, "source_range_bounds"),
             ({"asset_id": source_id, "start_frame": 0, "end_frame": 481, "fps": 24.0}, "source_range_bounds"),
@@ -689,6 +690,53 @@ class VideoProjectTests(unittest.TestCase):
         self.assertEqual({asset["id"] for asset in self.assets.list()}, {source_id})
         evidence = self.manager.get(created["id"])["segments"][0]["attempts"][0]["continuation"]["source_range"]
         self.assertIn("asset_reclaimed_at", evidence)
+
+    def test_character_migration_tail_padding_is_private_exact_and_audio_aligned(self) -> None:
+        source_id, character_id = "4" * 32, "5" * 32
+        self.add_asset(source_id, "video", {
+            **MEDIA, "duration": 3.0, "video_duration": 3.0,
+            "frame_count": 72, "reference_fps": 24.0,
+        })
+        self.add_asset(character_id, "image", {"width": 64, "height": 64})
+        source = self.assets.get(source_id)
+        character = self.assets.get(character_id)
+        source["sha256"] = hashlib.sha256(self.assets.content_path(source).read_bytes()).hexdigest()
+        character["sha256"] = hashlib.sha256(self.assets.content_path(character).read_bytes()).hexdigest()
+        self.assets.metadata.put(source_id, source)
+        self.assets.metadata.put(character_id, character)
+        planned = plan_migration(
+            {
+                "version": MIGRATION_VERSION, "source_asset_id": source_id,
+                "targets": [{"character_asset_id": character_id, "source_subject": "the centered dancer"}],
+                "segment_frames": 124, "overlap_frames": 5,
+                "audio_policy": "reference-source",
+            },
+            source=source, character=character, registry=DEFAULT_REGISTRY,
+        )
+        created = self.manager.create(planned["project"])
+        commands = []
+
+        def ffmpeg(command, **_kwargs):
+            commands.append(command)
+            Path(command[-1]).write_bytes(b"\x00\x00\x00\x18ftypisompadded")
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        self.manager.command_runner = ffmpeg
+        self.probe.stop()
+        try:
+            with patch.object(AssetStore, "_probe_media", return_value=dict(MEDIA)):
+                prepared, evidence = self.manager._prepare_request(
+                    self.manager.store.get(created["id"]), 0,
+                )
+        finally:
+            self.probe.start()
+        command = commands[0]
+        self.assertTrue(any("tpad=stop_mode=clone:stop=52" in part for part in command))
+        self.assertTrue(any("apad=pad_dur=5.166666667" in part for part in command))
+        self.assertEqual(evidence["source_range"]["frame_count"], 72)
+        self.assertEqual(evidence["source_range"]["materialized_frame_count"], 124)
+        self.assertEqual(evidence["source_range"]["input_padding_frames"], 52)
+        self.assertTrue(prepared["references"][-1]["include_audio"])
 
     @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "ffmpeg and ffprobe are required")
     def test_real_source_range_crop_preserves_exact_decoded_frame_interval(self) -> None:
@@ -2398,8 +2446,94 @@ class VideoProjectTests(unittest.TestCase):
             self.assertAlmostEqual(media["fps"], 24.0, places=2)
             self.assertGreater(media["duration"], 0.8)
             self.assertLess(media["duration"], 1.2)
+
+            def sampled_rgb(position: float) -> tuple[float, float, float]:
+                decoded = subprocess.run([
+                    "ffmpeg", "-v", "error", "-ss", str(position),
+                    "-i", str(merged_path), "-frames:v", "1",
+                    "-f", "rawvideo", "-pix_fmt", "rgb24", "-",
+                ], check=True, capture_output=True).stdout
+                channels = [decoded[offset::3] for offset in range(3)]
+                return tuple(sum(channel) / len(channel) for channel in channels)
+
+            first_rgb = sampled_rgb(0.1)
+            last_rgb = sampled_rgb(0.8)
+            self.assertGreater(first_rgb[0], first_rgb[2] + 100, first_rgb)
+            self.assertGreater(last_rgb[2], last_rgb[0] + 100, last_rgb)
         finally:
             self.probe.start()
+
+    @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "ffmpeg and ffprobe are required")
+    def test_character_migration_finalizer_exact_frames_and_all_audio_policies(self) -> None:
+        source_id, character_id = "6" * 32, "7" * 32
+        source_path = self.settings.comfy_input / "h3-studio" / f"{source_id}.mp4"
+        character_path = self.settings.comfy_input / "h3-studio" / f"{character_id}.png"
+        source_path.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run([
+            "ffmpeg", "-nostdin", "-y", "-v", "error",
+            "-f", "lavfi", "-i", "color=red:s=64x64:r=24:d=3",
+            "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=3",
+            "-map", "0:v", "-map", "1:a", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-shortest", str(source_path),
+        ], check=True, capture_output=True)
+        character_path.write_bytes(b"png-placeholder")
+        source_sha = hashlib.sha256(source_path.read_bytes()).hexdigest()
+        character_sha = hashlib.sha256(character_path.read_bytes()).hexdigest()
+        source = {
+            "id": source_id, "kind": "video", "filename": source_path.name,
+            "stored_name": source_path.name, "comfy_path": f"h3-studio/{source_path.name}",
+            "sha256": source_sha, "storage_size": source_path.stat().st_size,
+            "media": {
+                "duration": 3.0, "video_duration": 3.0, "width": 1024, "height": 1024,
+                "fps": 24.0, "reference_fps": 24.0, "frame_count": 72, "has_audio": True,
+            },
+        }
+        character = {
+            "id": character_id, "kind": "image", "filename": character_path.name,
+            "stored_name": character_path.name, "comfy_path": f"h3-studio/{character_path.name}",
+            "sha256": character_sha, "storage_size": character_path.stat().st_size,
+            "media": {"width": 64, "height": 64},
+        }
+        self.assets.metadata.put(source_id, source)
+        self.assets.metadata.put(character_id, character)
+        self.manager.command_runner = subprocess.run
+        for audio_policy in ("copy-source", "reference-source", "generate", "mute"):
+            with self.subTest(audio_policy=audio_policy):
+                planned = plan_migration(
+                    {
+                        "version": MIGRATION_VERSION, "source_asset_id": source_id,
+                        "targets": [{"character_asset_id": character_id, "source_subject": "the centered dancer"}],
+                        "segment_frames": 124, "overlap_frames": 5,
+                        "audio_policy": audio_policy,
+                    },
+                    source=source, character=character, registry=DEFAULT_REGISTRY,
+                )
+                created = self.manager.create(planned["project"])
+                attempt_id = f"attempt-{audio_policy}"
+                stored = self.manager.store.get(created["id"])
+                stored["merge_attempts"] = [{"id": attempt_id, "status": "merging"}]
+                self.manager.store.put(created["id"], stored)
+                concatenated = self.settings.comfy_output / f"concat-{audio_policy}.mp4"
+                concatenated.parent.mkdir(parents=True, exist_ok=True)
+                subprocess.run([
+                    "ffmpeg", "-nostdin", "-y", "-v", "error",
+                    "-f", "lavfi", "-i", "color=blue:s=64x64:r=24:d=5.166666667",
+                    "-f", "lavfi", "-i", "sine=frequency=880:sample_rate=48000:duration=5.166666667",
+                    "-map", "0:v", "-map", "1:a", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                    "-c:a", "aac", "-shortest", str(concatenated),
+                ], check=True, capture_output=True)
+                finalized, receipt = self.manager._finalize_character_migration(
+                    stored, concatenated, (1024, 1024), attempt_id, threading.Event(),
+                )
+                self.probe.stop()
+                try:
+                    media = AssetStore._probe_media(finalized, "video")
+                finally:
+                    self.probe.start()
+                self.assertEqual(media["frame_count"], 72)
+                self.assertAlmostEqual(media["duration"], 3.0, places=3)
+                self.assertEqual(media["has_audio"], audio_policy != "mute")
+                self.assertEqual(receipt["audio_policy"], audio_policy)
 
 
 if __name__ == "__main__":

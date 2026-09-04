@@ -1,6 +1,6 @@
 # MiniMax H3 Video Studio LLM Wiki
 
-> 最后更新：2026-09-03（Asia/Shanghai）。面向后续开发 Agent 的代码地图；具体发布版本以 Git 和开发机 `current` 软链接为准。实现事实优先级：源码与测试 > capability/API 回执 > 本文 > 历史 evidence 文档。
+> 最后更新：2026-09-04（Asia/Shanghai）。面向后续开发 Agent 的代码地图；具体发布版本以 Git 和开发机 `current` 软链接为准。实现事实优先级：源码与测试 > capability/API 回执 > 本文 > 历史 evidence 文档。
 
 ## 1. 先看这里
 
@@ -72,6 +72,7 @@ server/
   h3_reference.py              H3 参考尺寸、Token 估算与 sm120/Sage 安全策略
   checkpoints.py               最新 checkpoint、TTL/GC、续采身份校验与 staging
   motion_context.py            长视频 Motion Context latent 原子存储、完整性校验与回收
+  character_migration.py       人物迁移版本化 recipe、24 FPS 分窗、Prompt 绑定与存储预检
   video_projects.py            长视频项目执行器、续接、停止、合并、恢复
   prompting.py                 H3 Prompt 标签替换及 FL/Ref 模板编译
   security.py                  ID、文件名、路径与媒体签名安全边界
@@ -336,8 +337,9 @@ $H3_STUDIO_DATA_ROOT/
 - `tail_frame`：抽取上一段真实尾帧，作为下一段端点图
 - `previous_video`：创建不超过 15 秒的派生视频参考
 - `motion_context`：使用锁定的外部 Motion Context 节点复用上一段视频/音频 latent，对新段自动裁头，且不占用像素参考槽
+- 人物迁移：持久化 `h3.character-migration/v1` recipe，把源人物与目标角色绑定为 `<Subject 1>` / `<Subject 2>`，以 `17k+5` 合法帧窗和 5/22/39/56 帧重叠构造项目。首段独立，后续段 Motion Context 音画窗口一致；尾窗先向前回填并选取可覆盖余量的最大合法重叠，只有短于最小窗口或不足一个 17 帧网格的余量才在私有模型输入补帧，最终产物回到源 24 FPS 帧数
 - 失败/停止恢复、下游失效、派生资产回收
-- ffmpeg concat 合并、进度、取消和产物证据
+- ffmpeg concat 合并、进度、取消和产物证据；人物迁移合并后再精确裁帧，并按 `copy-source|reference-source|generate|mute` 实施音频策略
 
 续接与合并使用的是不同资产：续接可以裁剪系统派生副本，最终合并必须使用每段完整输出。
 
@@ -354,9 +356,9 @@ API 路由集中在 `server/app.py::Handler`：
 | 任务结果 | `GET /api/jobs`（支持 `summary=1`、`results=1`、`include_pinned=1`、分页与 ETag）, `GET/PATCH/DELETE /api/jobs/:id`, `POST /api/jobs/:id/cancel|resume`, `GET /api/preview`, `GET /api/download`, `GET /api/jobs/:id/thumbnail` |
 | 资产 | `GET/POST /api/assets`, `GET/PATCH/DELETE /api/assets/:id`（PATCH 支持名称、文件夹和置顶）, `GET /api/assets/:id/content|thumbnail`, `POST /api/jobs/:id/assets` |
 | 文件夹 | `GET/POST /api/asset-folders`, `PATCH/DELETE /api/asset-folders/:id`（删除时内容提升到父级） |
-| 派生媒体 | `POST /api/media/derive`, `GET /api/derivations`, `GET/PATCH/DELETE /api/derivations/:id`, `POST /api/derivations/:id/assets`（支持 `visibility=internal|library`） |
+| 派生媒体 | `POST /api/media/derive`, `POST /api/media/mux-audio`, `GET /api/derivations`, `GET/PATCH/DELETE /api/derivations/:id`, `POST /api/derivations/:id/assets`（支持 `visibility=internal|library`） |
 | 分镜分析 | `POST /api/media/analyze-scenes` |
-| 长视频 | `GET/POST /api/video-projects`, `GET/PUT/DELETE /api/video-projects/:id`, `POST .../run|stop|merge`, `POST .../segments/:id/run` |
+| 长视频 | `POST /api/video/character-migration/plan`, `GET/POST /api/video-projects`, `GET/PUT/DELETE /api/video-projects/:id`, `POST .../run|stop|merge`, `POST .../segments/:id/run` |
 | 换声 | `GET /api/voice/capabilities`, `GET/POST /api/voice/tasks`, `GET/DELETE /api/voice/tasks/:id`, `POST .../:id/cancel`, `GET .../:id/download` |
 | GPU 资源 | `GET /api/resources/gpus`（显存、租约、驻留模型、队列原因） |
 | 维护 | `POST /api/maintenance/gc` |
@@ -371,6 +373,7 @@ API 路由集中在 `server/app.py::Handler`：
 - `voice convert` 用两个音频 locator 提交持久换声任务，默认等待，`--detach` 只返回 task ID；`voice.*` 和 `gpu.status` 也是 Agent 原子 operation。
 - `media prepare-reference` 与 `media.prepare_reference` 共用服务端派生；本地输入先上传，CLI 本机不需要 ffmpeg。`job resume` 与 `job.resume` 只提交任务 ID、追加步数和幂等 request ID，可继续等待/下载。
 - `video compose` / `video.compose` 是端到端长视频入口：自动补齐 Profile 版本与摘要，再组合项目创建、顺序生成、Motion Context 裁头、合并等待和原子下载。`video trim` 复用 `media trim`，`video concat` 复用 `project merge`，底层原子 operation 仍可独立调用。
+- `video migrate-character` 先解析本地/asset/job/media/当前 context 资源，用纯规划器返回分窗、所有权、尾裁与存储估算，再创建持久项目。`--detach` 只返回 project ID；中断后通过现有 project 原子操作恢复，已完成段不重算。Agent 对应严格 Draft 2020-12 operation `video.character_migration.plan` / `.produce`，通用音频置换是 `media.mux_audio`。
 - `--control-timeout` 是控制面 HTTP 超时；transfer/media 超时独立且默认无限。`job wait --timeout` 是总等待超时。
 - 显式 Profile 先读 `/api/capabilities`，自动附加 `profile_version` 和 `manifest_sha256` 作为 `profile_digest`。
 - JSON stdout 使用 `h3ctl.output/v1` 信封，进度/日志写 stderr；JSONL 生成等待先输出 `submitted` 再输出状态事件。提交断连用同一 request ID 和 payload 恢复。
@@ -422,7 +425,7 @@ npm test
 | Prompt/模式/Profile | 前后端对应测试同时跑 |
 | 工作流节点图 | `server.tests.test_workflows` + capability 测试；有条件再跑远端 dry/real job |
 | API/存储/安全 | 对应 Python 测试，必要时完整 `npm test` |
-| 长视频执行/合并 | 前端 timeline 测试 + `server.tests.test_video_projects` |
+| 长视频执行/合并 | 前端 timeline 测试 + `server.tests.test_video_projects`；人物迁移再加 `server.tests.test_character_migration` 与 Go operation schema 回归 |
 | GPU 调度/换声 | `server.tests.test_gpu_resources` + `test_comfy_tasks` + `test_voice`；有 GPU 时用锁定上游 revision 各跑真实样本 |
 | 启动/网关/部署 | ops + gateway 测试 + 生产构建 + 健康检查 |
 

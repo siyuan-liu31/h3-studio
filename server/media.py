@@ -383,6 +383,80 @@ class MediaService:
             staging.unlink(missing_ok=True)
             self._slots.release()
 
+    def mux_audio(
+        self,
+        video: Path,
+        video_meta: dict[str, Any],
+        audio: Path,
+        audio_meta: dict[str, Any],
+        data: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Atomically replace a video's audio, padding/trimming to exact duration."""
+        if video_meta.get("kind") != "video":
+            raise ApiError(400, "media_kind_mismatch", "video must identify a video input")
+        audio_kind = audio_meta.get("kind")
+        audio_media = audio_meta.get("media") if isinstance(audio_meta.get("media"), dict) else {}
+        if audio_kind not in {"video", "audio"} or (audio_kind == "video" and audio_media.get("has_audio") is not True):
+            raise ApiError(422, "audio_stream_missing", "audio must identify an audio file or a video with a usable audio stream")
+        video_media = video_meta.get("media") if isinstance(video_meta.get("media"), dict) else {}
+        duration = _number(data.get("duration", video_media.get("video_duration") or video_media.get("duration")), "duration", minimum=0.001)
+        known_duration = float(video_media.get("video_duration") or video_media.get("duration") or 0)
+        if known_duration > 0 and duration > known_duration + 0.05:
+            raise ApiError(400, "invalid_time_range", "duration cannot exceed the video stream duration")
+        receipt_id = uuid.uuid4().hex
+        destination = secure_join(self.root, receipt_id + ".mp4")
+        staging = destination.with_name(f"{receipt_id}.tmp-{uuid.uuid4().hex}.mp4")
+        command = [
+            "ffmpeg", "-nostdin", "-y", "-v", "error",
+            "-i", str(video), "-i", str(audio),
+            "-filter_complex",
+            f"[1:a:0]asetpts=PTS-STARTPTS,aresample=48000,apad=pad_dur={duration:.9f},atrim=duration={duration:.9f}[a]",
+            "-map", "0:v:0", "-map", "[a]", "-t", f"{duration:.9f}",
+            "-c:v", "copy", "-c:a", "aac", "-ar", "48000", "-ac", "2",
+            "-movflags", "+faststart", "-fs", str(self.config.max_video_bytes + 1), str(staging),
+        ]
+        if not self._slots.acquire(blocking=False):
+            raise ApiError(429, "media_busy", "two media operations are already running")
+        try:
+            with self._reserve_output(self.config.max_video_bytes):
+                self._run(command, staging)
+                os.replace(staging, destination)
+                probe = AssetStore._probe_media(destination, "video")
+                if probe.get("has_audio") is not True:
+                    raise ApiError(422, "media_processing_failed", "muxed output has no audio stream")
+                size = destination.stat().st_size
+                if size > self.config.max_video_bytes:
+                    raise ApiError(413, "derived_too_large", "muxed media exceeds the configured video size limit")
+                sha256 = AssetStore.hash_file(destination)
+                display_name = safe_filename(str(data.get("display_name") or f"{video.stem}-muxed.mp4"))
+                value = {
+                    "id": receipt_id, "kind": "video", "display_name": display_name,
+                    "filename": display_name, "stored_name": destination.name,
+                    "mime_type": "video/mp4", "size": size, "sha256": sha256,
+                    "media": probe, "created_at": time.time(),
+                    "source": {
+                        "video": video_meta.get("source_receipt", {}),
+                        "audio": audio_meta.get("source_receipt", {}),
+                    },
+                    "operation": "mux_audio",
+                    "parameters": {"duration": duration, "audio_end_behavior": "pad_or_trim_to_video"},
+                }
+                with self._mutation_lock, self._lock:
+                    if self._stored_bytes() + size > self.config.max_asset_storage_bytes:
+                        raise ApiError(507, "media_quota", "derived media storage quota would be exceeded")
+                    self.metadata.put(receipt_id, value)
+                return self.public(value)
+        except Exception:
+            destination.unlink(missing_ok=True)
+            try:
+                self.metadata.delete(receipt_id)
+            except ApiError:
+                pass
+            raise
+        finally:
+            staging.unlink(missing_ok=True)
+            self._slots.release()
+
     def _prepare_h3_reference(
         self,
         source: Path,

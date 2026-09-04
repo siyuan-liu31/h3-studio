@@ -121,6 +121,131 @@ func serviceFor(server *httptest.Server) *Service {
 	return &Service{API: api.New(server.URL, time.Second), Context: "test", PollInterval: time.Millisecond}
 }
 
+func migrationInput(source, character string) map[string]any {
+	return map[string]any{
+		"version": "h3.character-migration/v1",
+		"source":  source,
+		"targets": []any{map[string]any{
+			"character":      character,
+			"source_subject": "the centered dancer",
+		}},
+	}
+}
+
+func TestPlanCharacterMigrationUsesCommonLocalAndCurrentRemoteLocators(t *testing.T) {
+	localSource := filepath.Join(t.TempDir(), "source.mp4")
+	localCharacter := filepath.Join(t.TempDir(), "character.png")
+	for _, path := range []string{localSource, localCharacter} {
+		if err := os.WriteFile(path, []byte("test media"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	for _, test := range []struct {
+		name, source, character string
+		wantUploads             int32
+	}{
+		{"local", localSource, localCharacter, 2},
+		{"current_remote", "h3://test/assets/" + serviceAssetID, "h3://test/assets/" + serviceJobID, 0},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var uploads atomic.Int32
+			var planned map[string]any
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/api/assets":
+					n := uploads.Add(1)
+					id := serviceAssetID
+					if n == 2 {
+						id = serviceJobID
+					}
+					w.WriteHeader(http.StatusCreated)
+					_ = json.NewEncoder(w).Encode(map[string]any{"asset_id": id})
+				case "/api/video/character-migration/plan":
+					_ = json.NewDecoder(r.Body).Decode(&planned)
+					_ = json.NewEncoder(w).Encode(map[string]any{"project": map[string]any{"title": "migration"}})
+				default:
+					t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
+				}
+			}))
+			defer server.Close()
+
+			result, err := serviceFor(server).PlanCharacterMigration(context.Background(), migrationInput(test.source, test.character))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if uploads.Load() != test.wantUploads || planned["source_asset_id"] != serviceAssetID {
+				t.Fatalf("uploads=%d plan=%v", uploads.Load(), planned)
+			}
+			target := planned["targets"].([]any)[0].(map[string]any)
+			if target["character_asset_id"] != serviceJobID || len(result["resolved_resources"].([]any)) != 2 {
+				t.Fatalf("target=%v result=%v", target, result)
+			}
+		})
+	}
+}
+
+func TestProduceCharacterMigrationRejectsExistingOutputBeforeRemoteMutation(t *testing.T) {
+	destination := filepath.Join(t.TempDir(), "existing.mp4")
+	if err := os.WriteFile(destination, []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+	}))
+	defer server.Close()
+	input := migrationInput("asset:"+serviceAssetID, "asset:"+serviceJobID)
+	input["to"] = destination
+	_, err := serviceFor(server).ProduceCharacterMigration(context.Background(), input, WaitOptions{})
+	typed, ok := err.(*contract.CLIError)
+	if !ok || typed.Code != "output_exists" || requests.Load() != 0 {
+		t.Fatalf("requests=%d err=%#v", requests.Load(), err)
+	}
+}
+
+func TestProduceCharacterMigrationCtrlCKeepsServerProjectResumable(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var cancelRequests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/api/video/character-migration/plan":
+			_ = json.NewEncoder(w).Encode(map[string]any{"project": map[string]any{"title": "migration", "segments": []any{}}})
+		case r.Method == http.MethodPost && r.URL.Path == "/api/video-projects":
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": serviceReqID})
+		case r.Method == http.MethodPost && r.URL.Path == "/api/video-projects/"+serviceReqID+"/run":
+			w.WriteHeader(http.StatusAccepted)
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": serviceReqID, "status": "running"})
+			go func() {
+				time.Sleep(5 * time.Millisecond)
+				cancel()
+			}()
+		case r.Method == http.MethodGet && r.URL.Path == "/api/video-projects/"+serviceReqID:
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": serviceReqID, "status": "running"})
+		default:
+			if r.Method == http.MethodPost || r.Method == http.MethodDelete {
+				cancelRequests.Add(1)
+			}
+			t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	input := migrationInput("asset:"+serviceAssetID, "asset:"+serviceJobID)
+	input["to"] = filepath.Join(t.TempDir(), "migration.mp4")
+	_, err := serviceFor(server).ProduceCharacterMigration(ctx, input, WaitOptions{Timeout: time.Second, PollInterval: time.Millisecond})
+	typed, ok := err.(*contract.CLIError)
+	if !ok || typed.Code != "character_migration_failed" {
+		t.Fatalf("err=%#v", err)
+	}
+	details, _ := typed.Details.(map[string]any)
+	if details["phase"] != "generate" || details["project_id"] != serviceReqID || cancelRequests.Load() != 0 {
+		t.Fatalf("details=%v cancel_requests=%d", details, cancelRequests.Load())
+	}
+}
+
 func TestWaitCompletedAfterTransientError(t *testing.T) {
 	var calls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

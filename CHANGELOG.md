@@ -4,6 +4,15 @@
 
 ## [Unreleased]
 
+### Added
+
+- 新增 Agent 友好的 `h3ctl video migrate-character`：支持本地与远端 locator、实用上不限时长的 24 FPS 源视频分窗、Base/Turbo 可配步数、Motion Context 音画连续、精确裁帧拼接、四种音频策略、断点恢复和存储预检。
+- 新增版本化 `video.character_migration` 能力与严格 Draft 2020-12 Agent operations `video.character_migration.plan`、`video.character_migration.produce`、`media.mux_audio`；服务端新增通用原子音频置换接口。
+
+### Changed
+
+- 长视频项目可选持久化 `h3.character-migration/v1` recipe 和源/角色 SHA-256；尾窗优先向前扩展为更大的合法重叠以减少或消除补帧，再执行终片精确裁切与音频后处理。旧 recipe、普通生成、`video compose`、现有项目和媒体合同保持不变。
+
 ## [0.5.0] - 2026-09-04
 
 ### Added

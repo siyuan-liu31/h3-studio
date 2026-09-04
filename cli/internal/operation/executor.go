@@ -131,6 +131,10 @@ func Execute(ctx context.Context, runtime Runtime, name string, input map[string
 		body := map[string]any{"operation": strings.TrimPrefix(name, "media.")}
 		copyOptional(body, input, "display_name")
 		return s.Derive(ctx, require("source"), body)
+	case "media.mux_audio":
+		body := map[string]any{}
+		copyOptional(body, input, "duration", "display_name")
+		return s.MuxAudio(ctx, require("video"), require("audio"), body)
 	case "media.prepare_reference":
 		body := map[string]any{
 			"operation":      "prepare_h3_reference",
@@ -220,6 +224,14 @@ func Execute(ctx context.Context, runtime Runtime, name string, input map[string
 	case "video.compose":
 		spec, _ := input["spec"].(map[string]any)
 		return s.ComposeVideo(ctx, spec, require("to"), boolValue(input["force"]), WaitOptions{
+			Timeout:      durationSeconds(input["timeout_seconds"]),
+			PollInterval: durationSeconds(input["poll_seconds"]),
+			OnEvent:      runtime.OnEvent,
+		})
+	case "video.character_migration.plan":
+		return s.PlanCharacterMigration(ctx, input)
+	case "video.character_migration.produce":
+		return s.ProduceCharacterMigration(ctx, input, WaitOptions{
 			Timeout:      durationSeconds(input["timeout_seconds"]),
 			PollInterval: durationSeconds(input["poll_seconds"]),
 			OnEvent:      runtime.OnEvent,

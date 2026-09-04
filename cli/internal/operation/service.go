@@ -39,6 +39,140 @@ func (s *Service) Capabilities(ctx context.Context) (map[string]any, error) {
 	return s.API.Get(ctx, "/api/capabilities")
 }
 
+func (s *Service) PlanCharacterMigration(ctx context.Context, input map[string]any) (map[string]any, error) {
+	raw, err := json.Marshal(input)
+	if err != nil {
+		return nil, contract.NewError("invalid_spec", "character migration spec cannot be encoded")
+	}
+	body := map[string]any{}
+	if err := json.Unmarshal(raw, &body); err != nil {
+		return nil, contract.NewError("invalid_spec", "character migration spec cannot be copied")
+	}
+	delete(body, "to")
+	delete(body, "force")
+	delete(body, "detach")
+	delete(body, "timeout_seconds")
+	delete(body, "poll_seconds")
+	if err := ValidateInput("video.character_migration.plan", body); err != nil {
+		return nil, err
+	}
+	sourceRef, sourceEvidence, err := s.ResolveAsset(ctx, stringValue(body["source"], ""), "motion")
+	if err != nil {
+		return nil, err
+	}
+	targets, _ := body["targets"].([]any)
+	if len(targets) != 1 {
+		return nil, contract.NewError("invalid_argument", "targets must contain exactly one character migration target in v1")
+	}
+	target, _ := targets[0].(map[string]any)
+	characterRef, characterEvidence, err := s.ResolveAsset(ctx, stringValue(target["character"], ""), "identity")
+	if err != nil {
+		return nil, err
+	}
+	serverTarget := map[string]any{
+		"character_asset_id": characterRef["asset_id"],
+		"source_subject":     target["source_subject"],
+	}
+	copyOptional(serverTarget, target, "details")
+	delete(body, "source")
+	body["source_asset_id"] = sourceRef["asset_id"]
+	body["targets"] = []any{serverTarget}
+	value := map[string]any{}
+	if err := s.API.JSON(ctx, http.MethodPost, "/api/video/character-migration/plan", body, &value); err != nil {
+		return nil, err
+	}
+	value["resolved_resources"] = []any{sourceEvidence, characterEvidence}
+	return value, nil
+}
+
+func (s *Service) ProduceCharacterMigration(ctx context.Context, input map[string]any, options WaitOptions) (map[string]any, error) {
+	destination := stringValue(input["to"], "")
+	force := boolValue(input["force"])
+	detach := boolValue(input["detach"])
+	if destination == "" && !detach {
+		return nil, contract.NewError("invalid_argument", "to is required unless planning only")
+	}
+	if destination != "" {
+		if _, err := os.Stat(destination); err == nil && !force {
+			return nil, contract.NewError("output_exists", "output already exists; pass force=true or --force to replace it")
+		} else if err != nil && !os.IsNotExist(err) {
+			return nil, &contract.CLIError{Code: "local_file", Message: err.Error(), Cause: err}
+		}
+	}
+	planned, err := s.PlanCharacterMigration(ctx, input)
+	if err != nil {
+		return nil, err
+	}
+	projectSpec, ok := planned["project"].(map[string]any)
+	if !ok {
+		return nil, invalidIDResponse("character migration plan did not contain a project")
+	}
+	created, err := jsonActionWithID(ctx, s, http.MethodPost, "/api/video-projects", projectSpec, "project_id", "id")
+	if err != nil {
+		return nil, migrationError("create", "", err)
+	}
+	projectID := stringValue(created["id"], "")
+	if options.OnEvent != nil {
+		options.OnEvent(map[string]any{"type": "project_created", "project_id": projectID, "phase": "create"})
+	}
+	if _, err = jsonAction(ctx, s, http.MethodPost, "/api/video-projects/"+url.PathEscape(projectID)+"/run", map[string]any{}); err != nil {
+		return nil, migrationError("run", projectID, err)
+	}
+	if detach {
+		return map[string]any{"project_id": projectID, "project": created, "plan": planned, "detached": true}, nil
+	}
+	if _, err = s.WaitProject(ctx, projectID, options.Timeout, options.PollInterval, options.OnEvent); err != nil {
+		return nil, migrationError("generate", projectID, err)
+	}
+	if _, err = jsonAction(ctx, s, http.MethodPost, "/api/video-projects/"+url.PathEscape(projectID)+"/merge", map[string]any{}); err != nil {
+		return nil, migrationError("merge", projectID, err)
+	}
+	project, err := s.WaitProject(ctx, projectID, options.Timeout, options.PollInterval, options.OnEvent)
+	if err != nil {
+		return nil, migrationError("merge_wait", projectID, err)
+	}
+	download, err := s.API.Download(ctx, "/api/video-projects/"+url.PathEscape(projectID)+"/merged/download", destination, force)
+	if err != nil {
+		return nil, migrationError("download", projectID, err)
+	}
+	return map[string]any{"project_id": projectID, "project": project, "plan": planned, "download": download}, nil
+}
+
+func migrationError(phase, projectID string, err error) error {
+	details := map[string]any{"phase": phase}
+	if projectID != "" {
+		details["project_id"] = projectID
+	}
+	return &contract.CLIError{Code: "character_migration_failed", Message: "character migration failed during " + phase, Details: details, Cause: err}
+}
+
+func (s *Service) MuxAudio(ctx context.Context, video, audio string, body map[string]any) (map[string]any, error) {
+	videoRef, videoEvidence, err := s.ResolveAsset(ctx, video, "video")
+	if err != nil {
+		return nil, err
+	}
+	audioRef, audioEvidence, err := s.ResolveAsset(ctx, audio, "audio")
+	if err != nil {
+		return nil, err
+	}
+	payload := map[string]any{
+		"video": map[string]any{"type": "asset", "asset_id": videoRef["asset_id"]},
+		"audio": map[string]any{"type": "asset", "asset_id": audioRef["asset_id"]},
+	}
+	copyOptional(payload, body, "duration", "display_name")
+	value := map[string]any{}
+	if err := s.API.JSONMedia(ctx, http.MethodPost, "/api/media/mux-audio", payload, &value); err != nil {
+		return nil, err
+	}
+	id, err := RequireResponseID(value, "receipt_id", "id")
+	if err != nil {
+		return nil, err
+	}
+	value["locator"] = "media:" + id
+	value["resolved_resources"] = []any{videoEvidence, audioEvidence}
+	return value, nil
+}
+
 func (s *Service) SubmitVoice(ctx context.Context, engine, source, reference, requestID string) (map[string]any, error) {
 	if engine != "vevo2" && engine != "yingmusic" {
 		return nil, contract.NewError("invalid_argument", "voice engine must be vevo2 or yingmusic")

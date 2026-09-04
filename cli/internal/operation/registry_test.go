@@ -40,6 +40,9 @@ func TestRegistryDeepSchemaRejectsNestedTyposTypesAndRanges(t *testing.T) {
 		{"generate.image", `{"prompt":"x","parameters":{"cfg":31}}`},
 		{"project.run", `{"project_id":"p","segment_ids":[1]}`},
 		{"project.run", `{"project_id":"p","segment_ids":["s","s"]}`},
+		{"video.character_migration.plan", `{"version":"h3.character-migration/v1","source":"asset:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","targets":[{"character":"asset:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","source_subjet":"the centered dancer"}]}`},
+		{"video.character_migration.plan", `{"version":"h3.character-migration/v1","source":"asset:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","targets":[]}`},
+		{"video.character_migration.plan", `{"version":"h3.character-migration/v1","source":"asset:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","targets":[{"character":"asset:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","source_subject":"the centered dancer"}],"segment_frames":125}`},
 	}
 	for _, test := range tests {
 		if err := ValidateInput(test.name, decodeObject(t, test.input)); err == nil {
@@ -86,7 +89,14 @@ func TestEveryPublishedSchemaCompilesAsDraft202012(t *testing.T) {
 }
 
 func TestRegistryAndExecuteCoverWorkflowAtoms(t *testing.T) {
-	required := []string{"asset.copy", "media.endpoints", "media.prepare_reference", "media.save", "media.download", "project.create", "project.apply", "project.list", "project.get", "project.wait", "project.run", "project.merge", "project.download", "video.compose", "job.list", "job.get", "job.wait", "job.resume", "job.cancel", "job.download", "job.save", "job.delete", "generate.image", "generate.video"}
+	required := []string{
+		"asset.copy", "media.endpoints", "media.prepare_reference", "media.mux_audio",
+		"media.save", "media.download", "project.create", "project.apply", "project.list",
+		"project.get", "project.wait", "project.run", "project.merge", "project.download",
+		"video.compose", "video.character_migration.plan", "video.character_migration.produce",
+		"job.list", "job.get", "job.wait", "job.resume", "job.cancel", "job.download",
+		"job.save", "job.delete", "generate.image", "generate.video",
+	}
 	names := map[string]bool{}
 	for _, definition := range Definitions() {
 		names[definition.Name] = true
@@ -159,6 +169,14 @@ func TestEveryPublishedOperationExecutesAndRejectsUnknownInput(t *testing.T) {
 		case r.URL.Path == "/api/media/derive":
 			w.WriteHeader(http.StatusCreated)
 			_ = json.NewEncoder(w).Encode(map[string]any{"receipt_id": idC})
+		case r.URL.Path == "/api/media/mux-audio":
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]any{"receipt_id": idC})
+		case r.URL.Path == "/api/video/character-migration/plan":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"version": "h3.character-migration/v1",
+				"project": map[string]any{"title": "migration", "segments": []any{}},
+			})
 		case strings.HasSuffix(r.URL.Path, "/assets"):
 			w.WriteHeader(http.StatusCreated)
 			_ = json.NewEncoder(w).Encode(map[string]any{"asset_id": idA})
@@ -209,6 +227,7 @@ func TestEveryPublishedOperationExecutesAndRejectsUnknownInput(t *testing.T) {
 		{"media.trim", fmt.Sprintf(`{"source":"asset:%s","start":0,"end":1}`, idA), "POST", "/api/media/derive", "operation", "video_trim", 1},
 		{"media.extract_audio", fmt.Sprintf(`{"source":"asset:%s"}`, idA), "POST", "/api/media/derive", "operation", "extract_audio", 1},
 		{"media.remove_audio", fmt.Sprintf(`{"source":"asset:%s"}`, idA), "POST", "/api/media/derive", "operation", "remove_audio", 1},
+		{"media.mux_audio", fmt.Sprintf(`{"video":"asset:%s","audio":"asset:%s"}`, idA, idB), "POST", "/api/media/mux-audio", "", nil, 1},
 		{"media.prepare_reference", fmt.Sprintf(`{"source":"asset:%s","preset":"h3-low-token"}`, idA), "POST", "/api/media/derive", "operation", "prepare_h3_reference", 1},
 		{"media.list", `{}`, "GET", "/api/derivations", "", nil, 1},
 		{"media.get", fmt.Sprintf(`{"media_id":%q}`, idC), "GET", "/api/derivations/" + idC, "", nil, 1},
@@ -234,6 +253,8 @@ func TestEveryPublishedOperationExecutesAndRejectsUnknownInput(t *testing.T) {
 		{"project.merge", fmt.Sprintf(`{"project_id":%q}`, idD), "POST", "/api/video-projects/" + idD + "/merge", "", nil, 1},
 		{"project.download", fmt.Sprintf(`{"project_id":%q,"to":%q}`, idD, filepath.Join(temp, "project.bin")), "GET", "/api/video-projects/" + idD + "/merged/download", "", nil, 1},
 		{"video.compose", fmt.Sprintf(`{"spec":{"title":"film","segments":[]},"to":%q,"poll_seconds":0.001}`, filepath.Join(temp, "composed.mp4")), "GET", "/api/video-projects/" + idD + "/merged/download", "", nil, 6},
+		{"video.character_migration.plan", fmt.Sprintf(`{"version":"h3.character-migration/v1","source":"asset:%s","targets":[{"character":"asset:%s","source_subject":"the centered dancer"}]}`, idA, idB), "POST", "/api/video/character-migration/plan", "source_asset_id", idA, 1},
+		{"video.character_migration.produce", fmt.Sprintf(`{"version":"h3.character-migration/v1","source":"asset:%s","targets":[{"character":"asset:%s","source_subject":"the centered dancer"}],"to":%q,"poll_seconds":0.001}`, idA, idB, filepath.Join(temp, "migration.mp4")), "GET", "/api/video-projects/" + idD + "/merged/download", "", nil, 7},
 	}
 	if len(tests) != len(Definitions()) {
 		t.Fatalf("execution matrix has %d cases for %d definitions", len(tests), len(Definitions()))

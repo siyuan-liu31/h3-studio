@@ -24,6 +24,8 @@ from typing import Any
 from .comfy import ComfyClient, find_outputs
 from .comfy_tasks import ComfyTaskCoordinator
 from .checkpoints import CheckpointManager
+from .character_migration import capability as character_migration_capability
+from .character_migration import plan as plan_character_migration
 from .config import Config
 from .director_workflows import director_workflow_index, director_workflow_preset
 from .errors import ApiError
@@ -39,6 +41,14 @@ from .scene_analysis import SceneAnalysisService
 from .video_projects import VideoProjectManager
 from .voice import VoiceTaskManager
 from .workflows import ResumeSamplingPlan, compile_prompt_request, compile_workflow, parse_generation_request, workflow_evidence
+
+
+def _disk_free(path: Path) -> int:
+    """Return free bytes on the nearest existing filesystem ancestor."""
+    candidate = path.resolve(strict=False)
+    while not candidate.exists() and candidate != candidate.parent:
+        candidate = candidate.parent
+    return shutil.disk_usage(candidate).free
 
 
 @dataclass(slots=True)
@@ -1473,6 +1483,45 @@ class Handler(BaseHTTPRequestHandler):
         receipt = self.runtime.media.derive(path, meta, data)
         self._json(HTTPStatus.CREATED, {**receipt, "receipt": receipt})
 
+    def _resolve_media_source(self, source: Any) -> tuple[Path, dict[str, Any]]:
+        """Resolve the same strict asset/job/derivation shape used by derive."""
+        if not isinstance(source, dict) or set(source) - {"type", "asset_id", "job_id", "receipt_id", "index"}:
+            raise ApiError(400, "invalid_source", "media source must identify exactly one asset, job output, or derivation")
+        source_type = source.get("type")
+        if source_type == "asset":
+            if set(source) != {"type", "asset_id"}:
+                raise ApiError(400, "invalid_source", "asset source requires only type and asset_id")
+            asset_id = validate_id(source.get("asset_id"), "asset id")
+            asset = self.runtime.assets.get(asset_id)
+            path = self.runtime.assets.content_path(asset)
+            meta = {**asset, "source_receipt": {"type": "asset", "asset_id": asset_id}}
+        elif source_type == "job":
+            if set(source) - {"type", "job_id", "index"} or "job_id" not in source:
+                raise ApiError(400, "invalid_source", "job source requires job_id and optional index")
+            index = source.get("index", 0)
+            if isinstance(index, bool) or not isinstance(index, int):
+                raise ApiError(400, "output_index", "index must be an integer")
+            job_id = validate_id(source.get("job_id"), "job id")
+            path, output = self._output_path(job_id, index)
+            job = self.runtime.jobs.get(job_id)
+            meta = {
+                "kind": job.get("output_type"), "media": output.get("media", {}),
+                "source_receipt": {"type": "job", "job_id": job_id, "index": index},
+            }
+        elif source_type == "derivation":
+            if set(source) != {"type", "receipt_id"}:
+                raise ApiError(400, "invalid_source", "derivation source requires only type and receipt_id")
+            receipt_id = validate_id(source.get("receipt_id"), "receipt id")
+            receipt = self.runtime.media.get(receipt_id)
+            path = self.runtime.media.path(receipt)
+            meta = {**receipt, "source_receipt": {"type": "derivation", "receipt_id": receipt_id}}
+        else:
+            raise ApiError(400, "invalid_source", "source.type must be asset, job, or derivation")
+        current = meta.get("media") if isinstance(meta.get("media"), dict) else {}
+        if str(meta.get("kind")) in {"video", "audio"} and not float(current.get("duration", 0) or 0):
+            meta["media"] = AssetStore._probe_media(path, str(meta["kind"]))
+        return path, meta
+
     def _save_derivation(self, receipt_id: str) -> None:
         data = self._read_json()
         if set(data) - {"display_name", "folder_id", "visibility"}:
@@ -1521,6 +1570,15 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/media/derive":
                 self._derive_media()
                 return
+            if path == "/api/media/mux-audio":
+                data = self._read_json()
+                if set(data) - {"video", "audio", "duration", "display_name"} or not {"video", "audio"} <= set(data):
+                    raise ApiError(400, "invalid_operation", "mux-audio requires only video, audio, optional duration, and display_name")
+                video_path, video_meta = self._resolve_media_source(data["video"])
+                audio_path, audio_meta = self._resolve_media_source(data["audio"])
+                receipt = self.runtime.media.mux_audio(video_path, video_meta, audio_path, audio_meta, data)
+                self._json(HTTPStatus.CREATED, {**receipt, "receipt": receipt})
+                return
             if path == "/api/media/analyze-scenes":
                 self._json(HTTPStatus.OK, self.runtime.scene_analysis.analyze(self._read_json()))
                 return
@@ -1543,6 +1601,39 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if path == "/api/prompts/compile":
                 self._json(HTTPStatus.OK, compile_prompt_request(self._read_json(), self.runtime.assets.get))
+                return
+            if path == "/api/video/character-migration/plan":
+                data = self._read_json(maximum=self.runtime.config.max_project_json_bytes)
+                source_id = validate_id(data.get("source_asset_id"), "source_asset_id")
+                targets = data.get("targets")
+                target = targets[0] if isinstance(targets, list) and len(targets) == 1 and isinstance(targets[0], dict) else {}
+                character_id = validate_id(target.get("character_asset_id"), "targets[0].character_asset_id")
+                capabilities = self.runtime.comfy.capabilities(self.runtime.config, self.runtime.registry)
+                available_profiles = {
+                    str(item.get("id"))
+                    for item in capabilities.get("profiles", [])
+                    if isinstance(item, dict) and item.get("available") is True
+                }
+                motion = capabilities.get("video", {}).get("motion_context", {})
+                used_context = sum(
+                    int(item.get("size", 0) or 0)
+                    for item in self.runtime.projects.motion_contexts.metadata.list()
+                )
+                result = plan_character_migration(
+                    data,
+                    source=self.runtime.assets.get(source_id),
+                    character=self.runtime.assets.get(character_id),
+                    registry=self.runtime.registry,
+                    available_profiles=available_profiles,
+                    motion_context_available=isinstance(motion, dict) and motion.get("available") is True,
+                    free_disk_bytes=min(
+                        _disk_free(self.runtime.config.data_root),
+                        _disk_free(self.runtime.config.comfy_output),
+                    ),
+                    merged_quota_bytes=self.runtime.config.max_merged_output_bytes,
+                    motion_context_quota_bytes=max(0, self.runtime.config.max_motion_context_storage_bytes - used_context),
+                )
+                self._json(HTTPStatus.OK, result)
                 return
             if segments == ["api", "video-projects"]:
                 self._json(HTTPStatus.CREATED, self.runtime.projects.create(
@@ -1756,6 +1847,12 @@ class Handler(BaseHTTPRequestHandler):
             query = urllib.parse.parse_qs(parsed.query)
             if path in {"/api/capabilities", "/capabilities"}:
                 capabilities = self.runtime.comfy.capabilities(self.runtime.config, self.runtime.registry)
+                video_capability = capabilities.get("video")
+                if isinstance(video_capability, dict):
+                    video_capability["character_migration"] = character_migration_capability(
+                        profiles=[item for item in capabilities.get("profiles", []) if isinstance(item, dict)],
+                        motion_context=video_capability.get("motion_context", {}) if isinstance(video_capability.get("motion_context"), dict) else {},
+                    )
                 safety_policy = public_safety_policy()
                 safety_policy["risk_threshold"] = self.runtime.config.h3_token_risk_threshold
                 self._json(HTTPStatus.OK, {
@@ -1944,7 +2041,9 @@ class Handler(BaseHTTPRequestHandler):
                             "download": "/api/download?id=...",
                             "thumbnail": "/api/jobs/:id/thumbnail?index=0",
                             "derive_media": "POST /api/media/derive",
+                            "mux_audio": "POST /api/media/mux-audio",
                             "prepare_h3_reference": "POST /api/media/derive operation=prepare_h3_reference",
+                            "character_migration_plan": "POST /api/video/character-migration/plan",
                             "media_task": "GET /api/media-tasks/:id; POST /api/media-tasks/:id/cancel",
                             "voice": "POST /api/voice/tasks; GET /api/voice/tasks/:id",
                             "gpu_resources": "GET /api/resources/gpus",

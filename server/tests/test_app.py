@@ -202,6 +202,56 @@ class ApiIntegrationTests(unittest.TestCase):
         profiles = json.loads(body)["profiles"]
         self.assertTrue(any(profile["id"] == "anything-v5-img2img" for profile in profiles))
 
+    def test_character_migration_capability_and_plan_are_versioned_and_strict(self) -> None:
+        source_id, character_id = "a" * 32, "b" * 32
+        source_path = self.config.comfy_input / "h3-studio" / f"{source_id}.mp4"
+        character_path = self.config.comfy_input / "h3-studio" / f"{character_id}.png"
+        source_path.parent.mkdir(parents=True, exist_ok=True)
+        source_path.write_bytes(b"source")
+        character_path.write_bytes(b"character")
+        self.server.runtime.assets.metadata.put(source_id, {
+            "id": source_id, "kind": "video", "filename": source_path.name,
+            "stored_name": source_path.name, "comfy_path": f"h3-studio/{source_path.name}",
+            "sha256": "c" * 64, "size": 1_000_000, "storage_size": 1_000_000,
+            "media": {"duration": 60.0, "video_duration": 60.0, "fps": 24.0, "frame_count": 1440, "width": 1920, "height": 1080, "rotation": 0, "has_audio": True},
+        })
+        self.server.runtime.assets.metadata.put(character_id, {
+            "id": character_id, "kind": "image", "filename": character_path.name,
+            "stored_name": character_path.name, "comfy_path": f"h3-studio/{character_path.name}",
+            "sha256": "d" * 64, "size": 1000, "storage_size": 1000,
+            "media": {"width": 512, "height": 768},
+        })
+        profiles = []
+        for profile in DEFAULT_REGISTRY.all():
+            item = profile.public()
+            item["available"] = True
+            profiles.append(item)
+        self.fake.capabilities = lambda _config, registry=None: {
+            "video": {"available": True, "motion_context": {"available": True}},
+            "image": {"available": True}, "profiles": profiles,
+        }
+        headers = {"X-API-Key": "test-key", "Content-Type": "application/json"}
+        status, _, body = self.request("GET", "/api/capabilities", headers={"X-API-Key": "test-key"})
+        migration = json.loads(body)["video"]["character_migration"]
+        self.assertEqual(status, 200)
+        self.assertTrue(migration["available"])
+        self.assertEqual(migration["recipe_version"], "h3.character-migration/v1")
+        payload = {
+            "version": "h3.character-migration/v1", "source_asset_id": source_id,
+            "targets": [{"character_asset_id": character_id, "source_subject": "the center performer"}],
+            "profile_id": "minimax-h3-ref2va", "steps": 4,
+            "segment_frames": 243, "overlap_frames": 39, "audio_policy": "copy-source",
+        }
+        status, _, body = self.request("POST", "/api/video/character-migration/plan", json.dumps(payload).encode(), headers)
+        result = json.loads(body)
+        self.assertEqual(status, 200, result)
+        self.assertEqual(len(result["windows"]), 7)
+        self.assertEqual(result["project"]["recipe"]["version"], "h3.character-migration/v1")
+        payload["unknown"] = True
+        status, _, body = self.request("POST", "/api/video/character-migration/plan", json.dumps(payload).encode(), headers)
+        self.assertEqual(status, 400)
+        self.assertEqual(json.loads(body)["error"]["code"], "invalid_character_migration")
+
     def test_voice_and_gpu_resource_routes_are_authenticated_and_stable(self) -> None:
         task_id = "e" * 32
         output = self.config.data_root / "voice-test.wav"

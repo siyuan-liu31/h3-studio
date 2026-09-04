@@ -153,8 +153,8 @@ var networkCommandActions = map[string]map[string]bool{
 	"asset":      {"upload": true, "download": true, "list": true, "get": true, "copy": true, "update": true, "pin": true, "delete": true},
 	"generate":   {"image": true, "video": true},
 	"job":        {"list": true, "get": true, "wait": true, "resume": true, "cancel": true, "download": true, "save": true, "workflow": true, "delete": true},
-	"media":      {"frame": true, "endpoints": true, "trim": true, "extract-audio": true, "remove-audio": true, "prepare-reference": true, "list": true, "get": true, "download": true, "save": true, "delete": true},
-	"video":      {"compose": true, "trim": true, "concat": true},
+	"media":      {"frame": true, "endpoints": true, "trim": true, "extract-audio": true, "remove-audio": true, "mux-audio": true, "prepare-reference": true, "list": true, "get": true, "download": true, "save": true, "delete": true},
+	"video":      {"compose": true, "migrate-character": true, "trim": true, "concat": true},
 	"voice":      {"convert": true, "status": true, "wait": true, "cancel": true, "delete": true, "download": true, "capabilities": true},
 	"project":    {"list": true, "create": true, "apply": true, "get": true, "delete": true, "run": true, "wait": true, "stop": true, "rerun": true, "merge": true, "download": true},
 }
@@ -471,8 +471,8 @@ Commands:
   asset         Upload, download, copy, inspect, update, pin, or delete assets
   generate      Generate an image or video
   job           Inspect, wait for, cancel, download, save, or delete jobs
-  media         Extract frames, endpoints, trims, or audio
-  video         Compose, trim, or concatenate long-video media
+  media         Extract, trim, remove, or atomically replace media audio
+  video         Compose, migrate characters, trim, or concatenate video
   voice         Convert speech or singing timbre with GPU-safe workers
   project       Manage long-video projects
   operation     Discover and invoke stable Agent operations

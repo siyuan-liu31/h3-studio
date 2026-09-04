@@ -208,6 +208,85 @@ optional `motion_context.video_frames` / `audio_frames`. See
 full contract, pinned external node version, recovery, storage, and dimension
 rules.
 
+## Unlimited-duration character migration
+
+`video migrate-character` replaces one clearly identified source performer
+with one character image while preserving the source motion, timing, camera,
+framing, scene, lighting, composition, and interactions. Local paths and all
+normal asset locators are accepted:
+
+```bash
+h3ctl video migrate-character \
+  --source ./performance.mp4 \
+  --character ./hero.png \
+  --source-subject "the centered dancer wearing red" \
+  --profile minimax-h3-ref2va \
+  --steps 4 --lora-strength 1 \
+  --segment-frames 243 --overlap-frames 39 \
+  --audio copy-source \
+  --to ./migrated.mp4 --timeout 0
+```
+
+The source is normalized once to a 24 FPS planning timeline. Legal generation
+windows use `17k+5` frames from 124 through 362; overlap is 5, 22, 39, or 56
+frames. The first window is independent and each later window carries the
+matching video/audio overlap through Motion Context. The terminal window first
+shifts backward and selects the largest supported overlap that still covers all
+remaining source frames. Only a sub-grid remainder or a source shorter than the
+minimum H3 window is padded in its private model input. Merge owns the first
+segment in full, removes each segment's actual overlap before concatenation,
+then applies only any unavoidable final grid trim to reach the exact source
+frame count.
+
+Turbo defaults to four steps but accepts any step count allowed by the selected
+Profile; Base Profiles are LoRA-free and require `lora_strength=0`. Audio modes
+are:
+
+- `copy-source` (default): replace final generated audio with the exact-length source audio;
+- `reference-source`: provide each range's aligned source audio to H3 and keep generated audio;
+- `generate`: do not reference source audio and keep generated audio;
+- `mute`: remove final audio.
+
+`copy-source` and `reference-source` fail during planning if the source has no
+usable audio. `h3ctl media mux-audio VIDEO AUDIO` exposes the same safe atomic
+pad/trim mux primitive for general use.
+
+Use `--plan-only` to inspect source ranges, ownership, final trim, profile pin,
+prompt bindings, and storage estimates without creating a project or spending
+GPU work. `--detach` creates and starts the durable project, then returns its
+`project_id`; `project get`, `project run`, `project wait`, `project merge`, and
+`project download` resume it without regenerating completed segments. Ctrl-C
+also leaves the remote project running and reports its ID in the structured
+error details.
+
+The versioned JSON form is accepted with `--spec PATH|-`:
+
+```json
+{
+  "version": "h3.character-migration/v1",
+  "source": "asset:SOURCE_ID",
+  "targets": [
+    {
+      "character": "asset:CHARACTER_ID",
+      "source_subject": "the centered dancer wearing red",
+      "details": "Keep the character's facial features and clothing design stable"
+    }
+  ],
+  "profile_id": "minimax-h3-ref2va",
+  "steps": 4,
+  "lora_strength": 1,
+  "segment_frames": 243,
+  "overlap_frames": 39,
+  "audio_policy": "copy-source"
+}
+```
+
+Agent callers use strict Draft 2020-12 operations
+`video.character_migration.plan`, `video.character_migration.produce`, and
+`media.mux_audio`. Unknown top-level and nested fields are rejected. The server
+capability `video.character_migration` reports availability, schema/recipe
+version, profiles, frame grids, audio policies, and Motion Context status.
+
 ## Voice conversion
 
 The voice commands are CLI/Agent-only in this release. Local inputs are first

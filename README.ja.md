@@ -128,6 +128,7 @@ flowchart LR
 - 各セグメントは約 5.17～15.08 秒に対応します。失敗したセグメントは再実行でき、上流の変更時には依存する下流セグメントを無効化して再計算できます。
 - 完成した 362 フレームのセグメントを次の動画参照に使う場合、システムが派生させた 15 秒の参照コピーだけを切り詰めます。最終結合では完全なセグメントを使用します。
 - Motion Context は Base と Turbo LoRA の両 Profile に対応し、Profile の許容範囲内で指定したステップ数を維持し、結合前に再利用された先頭フレームを自動で除去します。latent で接続する隣接セグメントは同じ出力サイズである必要があります。
+- `h3ctl video migrate-character` は、実用上長さ無制限の元動画で明示的に指定した 1 人を別のキャラクターに置き換えます。24 FPS の正確な範囲と Motion Context を使用し、末尾ウィンドウは先に戻して対応可能な重複を増やし、グリッド上不可避な場合だけ最小限パディングします。音声は `copy-source`、`reference-source`、`generate`、`mute` から選べます。
 - 結合には FFmpeg による監査可能なハードカットを使用します。自動で継ぎ目のない映像／音声接続を実現するとは表明しません。
 - `h3ctl video compose` でパイプライン全体を実行でき、プロジェクト、トリム、結合の各原子コマンドも個別に利用できます。完全な仕様は [長尺動画文書](docs/long-video.md) と [Motion Context 動画合成](docs/motion-context-long-video.md) を参照してください。
 
@@ -140,10 +141,12 @@ flowchart LR
 
 ### Agent 自動化向け Go CLI
 
-`h3ctl` は、アセットのアップロード／ダウンロード、画像・動画生成、再開可能なタスク待機、先頭・末尾フレーム抽出、メディア派生、長尺動画プロジェクトを安定した原子コマンドとして提供します。`h3ctl video compose` は、バージョン固定されたプロジェクト Spec から完成動画のダウンロードまでを Agent 向けに一括実行しつつ、すべてのプロジェクト操作を個別にも呼び出せます。さらに、`yt-dlp` ベースの分離されたローカル `douyin parse|download|serve` ツールと、ループバックのみで利用できる Swagger API を含みます。このツールは H3 SSH context を開きません。CLI はローカルファイル、リモートアセット locator、レンタルマシンのアドレス変更に対応する SSH context、Agent 向け JSON/JSONL 出力を利用できます。ビルド、接続、Cookie の安全性、全コマンドは [Go CLI ガイド](docs/cli.md) を参照してください。
+`h3ctl` は、アセット転送、画像／動画生成、再開可能な待機、メディア派生、長尺動画、長さ無制限のキャラクター移行を安定した原子コマンドとして提供します。`video.character_migration.plan`、`video.character_migration.produce`、`media.mux_audio` は Agent 向けの厳密な Draft 2020-12 契約です。CLI はローカルファイル、リモートアセット locator、SSH context、JSON/JSONL 出力を利用できます。詳細は [Go CLI ガイド](docs/cli.md) を参照してください。
 
 ```bash
 h3ctl video compose --spec trilogy.json --to final.mp4 --timeout 0
+h3ctl video migrate-character --source performance.mp4 --character hero.png \
+  --source-subject "画面中央のダンサー" --steps 4 --to migrated.mp4
 ```
 
 リポジトリには、ローカル H3 プロンプトコンパイラー skill が 1 つだけ付属しています。入口は [`skills/h3-ref2va-prompt-compiler`](skills/h3-ref2va-prompt-compiler/SKILL.md) です。

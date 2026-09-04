@@ -20,6 +20,7 @@ const MediaHelp = `Usage: h3ctl media COMMAND
   trim SOURCE --start SECONDS --end SECONDS [--audio]
   extract-audio SOURCE
   remove-audio SOURCE
+  mux-audio VIDEO AUDIO [--duration SECONDS] [--name TEXT]
   prepare-reference SOURCE [--preset h3-low-token | controlled sizing flags]
   list
   get MEDIA
@@ -173,6 +174,24 @@ func (r *Runner) runMedia(ctx context.Context, args []string) (any, error) {
 			body["display_name"] = *name
 		}
 		return r.Service.Derive(ctx, set.Arg(0), body)
+	case "mux-audio":
+		set := newFlags("media mux-audio")
+		duration := set.Float64("duration", 0, "")
+		name := set.String("name", "", "")
+		if err := parseFlags(set, args[1:]); err != nil {
+			return nil, usage("%v", err)
+		}
+		if set.NArg() != 2 || *duration < 0 || math.IsNaN(*duration) || math.IsInf(*duration, 0) {
+			return nil, usage("media mux-audio requires VIDEO AUDIO and an optional positive --duration")
+		}
+		body := map[string]any{}
+		if *duration > 0 {
+			body["duration"] = *duration
+		}
+		if *name != "" {
+			body["display_name"] = *name
+		}
+		return r.Service.MuxAudio(ctx, set.Arg(0), set.Arg(1), body)
 	case "list":
 		if len(args) != 1 {
 			return nil, usage("media list does not accept arguments")

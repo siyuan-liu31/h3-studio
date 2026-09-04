@@ -42,10 +42,57 @@ func TestVideoHelpDocumentsComposeRecoveryAndTrimAlias(t *testing.T) {
 	if code != 0 || stderr != "" {
 		t.Fatalf("code=%d stderr=%q", code, stderr)
 	}
-	for _, expected := range []string{"video compose", "video trim", "video concat", "motion_context", "project_id", "Turbo4"} {
+	for _, expected := range []string{"video compose", "video migrate-character", "video trim", "video concat", "motion_context", "project_id", "Turbo4"} {
 		if !strings.Contains(out, expected) {
 			t.Fatalf("help is missing %q: %s", expected, out)
 		}
+	}
+}
+
+func TestVideoMigrateCharacterPlanUsesStrictVersionedContract(t *testing.T) {
+	var calls int
+	var payload map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if r.Method != http.MethodPost || r.URL.Path != "/api/video/character-migration/plan" {
+			t.Fatalf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+		_ = json.NewDecoder(r.Body).Decode(&payload)
+		_ = json.NewEncoder(w).Encode(map[string]any{"version": "h3.character-migration/v1", "project": map[string]any{}})
+	}))
+	defer server.Close()
+	code, _, stderr := executeTest(t, []string{
+		"--server", server.URL, "video", "migrate-character",
+		"--source", "asset:" + testAssetID,
+		"--character", "asset:" + testJobID,
+		"--source-subject", "the centered dancer in a red dress",
+		"--segment-frames", "124", "--overlap-frames", "5", "--steps", "4",
+		"--plan-only", "--json",
+	}, "")
+	if code != 0 || stderr != "" || calls != 1 {
+		t.Fatalf("code=%d calls=%d stderr=%q", code, calls, stderr)
+	}
+	if payload["version"] != "h3.character-migration/v1" || payload["source_asset_id"] != testAssetID {
+		t.Fatalf("payload=%v", payload)
+	}
+	target := payload["targets"].([]any)[0].(map[string]any)
+	if target["character_asset_id"] != testJobID || target["source_subject"] != "the centered dancer in a red dress" {
+		t.Fatalf("target=%v", target)
+	}
+}
+
+func TestVideoMigrateCharacterRejectsInvalidSamplingBeforeHTTP(t *testing.T) {
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { calls++ }))
+	defer server.Close()
+	code, _, stderr := executeTest(t, []string{
+		"--server", server.URL, "video", "migrate-character",
+		"--source", "asset:" + testAssetID,
+		"--character", "asset:" + testJobID,
+		"--source-subject", "the centered dancer", "--steps", "0", "--plan-only",
+	}, "")
+	if code != 2 || calls != 0 || !strings.Contains(stderr, "--steps must be between 4 and 50") {
+		t.Fatalf("code=%d calls=%d stderr=%q", code, calls, stderr)
 	}
 }
 
@@ -787,10 +834,10 @@ func TestConnectionDecisionCoversEveryRemoteCommandAction(t *testing.T) {
 		"asset":      {"upload", "download", "list", "get", "copy", "update", "pin", "delete"},
 		"generate":   {"image", "video"},
 		"job":        {"list", "get", "wait", "resume", "cancel", "download", "save", "workflow", "delete"},
-		"media":      {"frame", "endpoints", "trim", "extract-audio", "remove-audio", "prepare-reference", "list", "get", "download", "save", "delete"},
+		"media":      {"frame", "endpoints", "trim", "extract-audio", "remove-audio", "mux-audio", "prepare-reference", "list", "get", "download", "save", "delete"},
 		"voice":      {"convert", "status", "wait", "cancel", "delete", "download", "capabilities"},
 		"project":    {"list", "create", "apply", "get", "delete", "run", "wait", "stop", "rerun", "merge", "download"},
-		"video":      {"compose", "trim", "concat"},
+		"video":      {"compose", "migrate-character", "trim", "concat"},
 	}
 	if len(networkCommandActions) != len(actions) {
 		t.Fatalf("network policy top-level drift: %#v", networkCommandActions)

@@ -147,6 +147,7 @@ flowchart LR
 - Each segment supports about 5.17–15.08 seconds. Failed segments can be rerun; upstream changes invalidate dependent downstream segments so they can be recalculated.
 - When a finished 362-frame segment becomes the next segment's video reference, only a system-derived 15-second reference copy is trimmed. The final merge still uses the complete segment.
 - Motion Context supports both Base and Turbo LoRA Profiles, preserves the requested Profile-bounded step count, and automatically removes reused head frames before concatenation. Adjacent latent-linked segments must keep the same output dimensions.
+- `h3ctl video migrate-character` replaces one explicitly identified performer across a source video of arbitrary practical length. It plans exact 24 FPS windows, carries video/audio latent state through Motion Context, increases the final supported overlap to backfill the terminal window before using any unavoidable padding, and applies `copy-source`, `reference-source`, `generate`, or `mute` audio policy.
 - FFmpeg performs an auditable hard-cut merge. MiniMax H3 Video Studio does not claim automatic seamless audio/video transitions.
 - Run the full pipeline with `h3ctl video compose`, or use the atomic project/trim/concat commands separately. See [Long Video](docs/long-video.md) and [Motion Context composition](docs/motion-context-long-video.md) for the complete contracts.
 
@@ -159,10 +160,12 @@ flowchart LR
 
 ### Go CLI for Agent automation
 
-`h3ctl` exposes stable atomic commands for asset upload/download, image and video generation, resumable job waiting, endpoint-frame extraction, media derivation, and long-video projects. `h3ctl video compose` adds an Agent-friendly end-to-end path from a version-pinned project spec to a downloaded final movie while keeping every project operation independently callable. It also includes an isolated local `douyin parse|download|serve` utility backed by `yt-dlp`, with a loopback-only Swagger API; this utility never opens the H3 SSH context. The CLI supports local files, remote asset locators, SSH contexts for changing rented-machine addresses, and JSON/JSONL output. See the [Go CLI guide](docs/cli.md) for build, connection, command, cookie-safety, and local API details.
+`h3ctl` exposes stable atomic commands for asset transfer, image and video generation, resumable waiting, media derivation, long-video projects, and unlimited-duration character migration. `video.character_migration.plan`, `video.character_migration.produce`, and `media.mux_audio` expose strict Draft 2020-12 contracts for Agents. It also includes an isolated local `douyin parse|download|serve` utility backed by `yt-dlp`, with a loopback-only Swagger API; this utility never opens the H3 SSH context. The CLI supports local files, remote asset locators, SSH contexts for changing rented-machine addresses, and JSON/JSONL output. See the [Go CLI guide](docs/cli.md) for build, connection, command, cookie-safety, and local API details.
 
 ```bash
 h3ctl video compose --spec trilogy.json --to final.mp4 --timeout 0
+h3ctl video migrate-character --source performance.mp4 --character hero.png \
+  --source-subject "the centered dancer" --steps 4 --to migrated.mp4
 ```
 
 > Branding compatibility: the CLI remains `h3ctl`. Existing `H3_STUDIO_*` environment variables, `h3-studio` data paths, API contracts, and persisted browser keys remain unchanged.
