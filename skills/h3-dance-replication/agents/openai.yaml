@@ -1,0 +1,7 @@
+interface:
+  display_name: "H3 舞蹈复刻"
+  short_description: "基于参考视频、指定角色与新场景生成可直接交付的 H3 舞蹈复刻视频"
+  default_prompt: "Use $h3-dance-replication to replace this reference dance with my characters and new background, then deliver the generated video directly."
+
+policy:
+  allow_implicit_invocation: true

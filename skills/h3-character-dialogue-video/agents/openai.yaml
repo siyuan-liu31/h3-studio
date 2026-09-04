@@ -1,0 +1,7 @@
+interface:
+  display_name: "H3 人物对白生视频"
+  short_description: "用人物参考图和对白生成带原生配音的 H3 短视频完整流程"
+  default_prompt: "使用 $h3-character-dialogue-video，根据我提供的人物图和对白生成一条有声 H3 视频。"
+
+policy:
+  allow_implicit_invocation: true

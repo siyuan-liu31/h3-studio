@@ -151,7 +151,7 @@ h3ctl video migrate-character --source performance.mp4 --character hero.png \
 
 > 品牌更名不影响兼容性：CLI 仍叫 `h3ctl`，现有 `H3_STUDIO_*` 环境变量、`h3-studio` 数据路径、API 合同和浏览器持久化键均保持不变。
 
-仓库同时附带一个本地 H3 提示词编译 skill，入口见 [`skills/h3-ref2va-prompt-compiler`](skills/h3-ref2va-prompt-compiler/SKILL.md)。
+仓库同时附带四个本地 Skill：[`H3 提示词编译`](skills/h3-ref2va-prompt-compiler/SKILL.md)、[`H3 人物对白生视频`](skills/h3-character-dialogue-video/SKILL.md)、[`H3 舞蹈复刻`](skills/h3-dance-replication/SKILL.md) 与 [`H3 不限时长人物迁移`](skills/h3-character-migration/SKILL.md)。
 
 ## 三步启动
 
@@ -265,7 +265,7 @@ ssh -N -L 16020:127.0.0.1:3013 -p <PORT> <SSH_USER>@<HOST>
 app/       React 节点画布与工作区 UI
 server/    Python 标准库 API、存储、任务与 ComfyUI 工作流编译
 scripts/   安装、启动、诊断、长视频与运维工具
-skills/    项目附带的单一 H3 Prompt Compiler skill
+skills/    项目附带的 H3 提示词编译与生产 Skills
 docs/      安装、架构、模型工作流、发布规范与 LLM 代码地图
 tests/     前端构建、渲染和源码合同测试
 ```

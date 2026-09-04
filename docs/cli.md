@@ -215,6 +215,10 @@ with one character image while preserving the source motion, timing, camera,
 framing, scene, lighting, composition, and interactions. Local paths and all
 normal asset locators are accepted:
 
+For an Agent-ready end-to-end workflow, including plan review, stable prompt
+aliases, recovery, and final media delivery, use the bundled
+[`h3-character-migration` Skill](../skills/h3-character-migration/SKILL.md).
+
 ```bash
 h3ctl video migrate-character \
   --source ./performance.mp4 \

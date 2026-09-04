@@ -92,7 +92,10 @@ cli/
   internal/contract,output/    版本化 JSON/JSONL 回执与稳定退出码
 
 skills/
-  h3-ref2va-prompt-compiler/   项目附带的单一本地 H3 提示词编译 skill
+  h3-ref2va-prompt-compiler/   项目附带的 H3 提示词编译 Skill
+  h3-character-dialogue-video/ 人物参考图与对白生成有声视频 Skill
+  h3-dance-replication/        多人、编队或换背景的舞蹈复刻 Skill
+  h3-character-migration/      人物迁移规划、生成、恢复与交付 Skill
 
 tests/                         Node 合同/渲染/回归测试
 server/tests/                  Python API、工作流、存储与长视频测试

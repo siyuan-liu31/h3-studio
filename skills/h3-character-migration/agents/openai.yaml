@@ -1,0 +1,7 @@
+interface:
+  display_name: "H3 不限时长人物迁移"
+  short_description: "Replace one video character across arbitrary durations"
+  default_prompt: "使用 $h3-character-migration，把我提供的源视频中一个明确人物替换成目标角色，先规划再生成并交付成片。"
+
+policy:
+  allow_implicit_invocation: true

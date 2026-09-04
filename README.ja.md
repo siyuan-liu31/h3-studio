@@ -149,7 +149,7 @@ h3ctl video migrate-character --source performance.mp4 --character hero.png \
   --source-subject "画面中央のダンサー" --steps 4 --to migrated.mp4
 ```
 
-リポジトリには、ローカル H3 プロンプトコンパイラー skill が 1 つだけ付属しています。入口は [`skills/h3-ref2va-prompt-compiler`](skills/h3-ref2va-prompt-compiler/SKILL.md) です。
+リポジトリには、[`H3 プロンプトコンパイラー`](skills/h3-ref2va-prompt-compiler/SKILL.md)、[`H3 キャラクター会話動画`](skills/h3-character-dialogue-video/SKILL.md)、[`H3 ダンス再現`](skills/h3-dance-replication/SKILL.md)、[`H3 長尺キャラクター移行`](skills/h3-character-migration/SKILL.md) の 4 つのローカル Skill が付属しています。
 
 ## 3 ステップで起動
 
@@ -263,7 +263,7 @@ ssh -N -L 16020:127.0.0.1:3013 -p <PORT> <SSH_USER>@<HOST>
 app/       React ノードキャンバス／ワークスペース UI
 server/    Python 標準ライブラリ API、ストレージ、タスク、ComfyUI ワークフローコンパイル
 scripts/   インストール、起動、診断、長尺動画、運用ツール
-skills/    付属する単一の H3 Prompt Compiler skill
+skills/    付属する H3 プロンプ生成と制作 Skills
 docs/      インストール、アーキテクチャ、モデルワークフロー、リリース規約、LLM コードマップ
 tests/     フロントエンドのビルド、レンダリング、ソース契約テスト
 ```

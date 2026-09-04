@@ -170,7 +170,7 @@ h3ctl video migrate-character --source performance.mp4 --character hero.png \
 
 > Branding compatibility: the CLI remains `h3ctl`. Existing `H3_STUDIO_*` environment variables, `h3-studio` data paths, API contracts, and persisted browser keys remain unchanged.
 
-The repository also includes one local H3 prompt compiler skill at [`skills/h3-ref2va-prompt-compiler`](skills/h3-ref2va-prompt-compiler/SKILL.md).
+The repository also bundles four local Skills: [`H3 Prompt Compiler`](skills/h3-ref2va-prompt-compiler/SKILL.md), [`Character Dialogue Video`](skills/h3-character-dialogue-video/SKILL.md), [`Dance Replication`](skills/h3-dance-replication/SKILL.md), and [`Character Migration`](skills/h3-character-migration/SKILL.md).
 
 ## Start in three steps
 
@@ -284,7 +284,7 @@ Place external profiles in `H3_STUDIO_DATA_ROOT/profiles/*.json`. A manifest may
 app/       React node canvas and workspace UI
 server/    Python standard-library API, storage, jobs, and ComfyUI workflow compilation
 scripts/   Installation, startup, diagnostics, Long Video, and operations tools
-skills/    The single bundled H3 Prompt Compiler skill
+skills/    Bundled H3 prompt-compilation and production Skills
 docs/      Installation, architecture, model workflows, release policy, and LLM code map
 tests/     Frontend build, rendering, and source-contract tests
 ```
